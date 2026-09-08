@@ -1,6 +1,186 @@
+## P2 首批：单个已接纳依赖作为实际起点（2026-09-08）
+
+当前仅支持下游一个父任务、且父任务无依赖的 native Git 链。仍使用原 `worker-start` / `kernel-accept`：先批准完整 Plan 及父子各自的受信验收策略，父任务真实接纳后再派发子任务；省略 `--base-branch` 由服务端选择父 candidate SHA，显式值必须相同。无依赖任务继续使用批准 Plan.baseCommit；多父、深链、SSH/WSL、普通目录明确不支持。
+
+| 规则 | owner / 执行点 | 失败处理 | 证据层次 / 状态 |
+|---|---|---|---|
+| 父 accepted 必须匹配当前 Run、批准策略、最新成功 settled Dispatch 和原生 Git worktree HEAD | B / kernel-dependency-base、managed admission | completed、scope-checked、自报、旧身份/策略/候选不能选为起点 | 真实 Git/SQLite 服务测试；程序已执行 |
+| 实际 baseBranch 与父接纳绑定写入原 start_options；原事务复核、限额不变 | B / createStartingWorkerDispatch | 创建前已失效则无新 Dispatch/执行资源；不重置尝试累计 | 原事务与真实工作树回归；程序已执行 |
+| 异步准备后及正文发送前复核；最后紧邻发送再同步检查身份/DB | B / 原 workerStart 及失败回执 | 原生 agent-first 期间可已创建 Agent/资源；阻止正文送达并保留准确资源记录，不声称从未启动或已清理 | 终端/Agent 是替身，不是真实 Worker；程序已执行 |
+| 子验收仅检查实际起点到子候选的自身净差异 | B / P1 kernelAccept 与原只读范围检查 | 先验证完整批准 Plan/父绑定，再由服务端派生单任务审核视图；继承文件不计子写权，子实际越界仍拒绝 | 真实 Git 差异及受信 Node 验收；程序已执行 |
+
+结果、派发正文和接纳记录给出实际 `kernelBase`/父 Task/Dispatch；原 Plan 保持批准基线，不由请求改写。接纳记录是历史固定候选结果，当前有效性须经 `kernel-accept`（含缓存回放）重新验证；父记录/策略/HEAD 失效后不能继续派发或复用子接纳。Git 观察与 DB 事务不是跨进程文件锁，也不是文件系统沙箱；受信检查仍沿 P1 的可执行策略边界。accepted 不等于跨轨 integrated，未完成 P2 全链或 P0 真实 Worker 验收，未启动模型、Electron 或正式比较。
+
+本批验证：14 文件发现/执行 542/542（含新增 27 例），Node/CLI 类型、9 个变更 TS 原 lint/format、main 构建与 diff check 通过。仓外 `evidence/continuation-20260908-003901/P2-dependency-base` 的 report 记录实际命令、固定临时候选 SHA 与首轮失败；真实运行证据仅覆盖上述服务/Git边界。当前 GitHub TLS 已被总控诊断失败，按指令暂停 push/远端查询；本地提交与远端发布分开记录。下文保留各历史批次当时状态。
+
+## P1：受信成果接纳入口（2026-09-08）
+
+当前入口为 `orchestration.kernelApproveAcceptance` / `orchestration.kernelAccept`，复用已验证协调者的 Run fencing、服务端计划、原 Task/监督 Dispatch、既有 Git/进程执行器及 SQLite。原生 `completed`、Worker 自报和 `scope-checked` 均不能写入 `tasks.kernel_acceptance` 的 accepted；普通 TaskStatus/result 保持原义。下文历史批次的“未实现”描述保留其原时间口径。
+
+```text
+orca orchestration kernel-approve-acceptance --run <run_id> --from <coordinator> --checks <checks.json>
+orca orchestration kernel-accept --run <run_id> --from <coordinator> --task <task_id> --dispatch <dispatch_id> --candidate <full_sha>
+```
+
+`checks.json` 是协调者显式批准的独立检查源码，例如 `{"task_id":{"source":"require('node:assert/strict').equal(require('node:fs').readFileSync('answer.txt','utf8'),'42')","timeoutMs":3000}}`。服务端按原字节存储策略并生成 approvalId；不解释 Plan.acceptance，不从候选配置、package 脚本或原生 Task.spec 读取检查程序。每策略 1–16 个 Task 检查，每段最多 32768 字符、总 UTF-8 128 KiB，每检查最多 30 秒、策略总额最多 60 秒；这是单次验收检查界限，不是费用预算。
+
+| 规则 | owner / 执行点 | 失败处理 | 证据层次 / 状态 |
+|---|---|---|---|
+| 仅当前合法协调者批准；最新成功 settled 的本地监督 Dispatch 与服务端 repo/base/Task 一致 | B / 原生 RPC、Run 配置 | 缺策略、身份或归属不符即拒绝 | 真实 handler/SQLite；程序已执行，限定测试运行已验证 |
+| 候选等于绑定 Worker 工作树 HEAD；先范围检查，再独占 detached 快照 | B / 原 Git runner、snapshot | 原/新路径与固定对象检查复用；完整树仅安全 100644 文件，最多4096文件/16 MiB；不支持的树/元数据拒绝 | 真实临时 Git；运行已验证 |
+| 原字节物化，不执行 checkout/smudge；禁 hooks、外部命令注入与自动拉取，filter/sparse/partial/worktreeConfig 拒绝 | B / snapshot、固定 Node binary+argv | 检查非零、超时、输出超限、字节/HEAD/绑定变化均不能接受 | 真实 Git + Node 子进程；运行已验证 |
+| checking 是原 Task 列的占用；失效仍保留占用直到原进程退出；最终事务 CAS | B / 原 SQLite | 重复/并发及原生缓存回执都复核当前绑定；重批准/状态变化不复用旧接受；进程丢失的 checking 拒绝自动重跑，待监督处理 | 真实 SQLite、dispatcher 重放/并发；运行已验证 |
+| accepted 与 native result 分离，绑定固定候选、策略和 Dispatch | B / `tasks.kernel_acceptance` | 旧完成回执和伪造 result 不可覆盖；字段是固定候选记录，读取当前有效性须走 kernel-accept 复核 | 加性 schema32、持久/迟到回归；运行已验证 |
+| 依赖、集成、真实 Worker、SSH/WSL 与普通目录 | 后续原 owner | P2仍拒绝；accepted 不等于 integrated | 本批未运行真实 Worker/GUI；未支持 |
+
+检查源码是批准者信任的可执行代码，**不是沙箱**；若它主动导入候选代码，批准者需承担该执行风险。子进程仅继承必要系统路径变量，清除 Node 注入变量和 Orca 调用凭据，Electron Node 模式仅限该子进程；不安装依赖、不调用模型、不启动桌面。验证前后检查快照真实文件字节及源 HEAD，不声称文件系统抗外部并发篡改隔离或子进程树沙箱。清理只针对本次独占临时路径，失败返回明确保留路径，绝不清理原 Worker 工作树。旧服务无新方法时 CLI 明确 unsupported，不回退原生完成。
+
+本批证据保存在仓外 `evidence/continuation-20260908-003901/P1-acceptance`：组合12文件482例通过；新增持久性补例后两文件发现/执行55/55（37服务+18 Git/策略）；末轮 fixture 把 SQLite 放进 Git 根而导致越界，已移到测试仓库外并保留失败。窄审返修后4文件发现/执行101/101，覆盖真实临时路径别名、畸形边界解析及Git blob字节/OID不符；Node/CLI类型和编译、main构建逐项记录，首轮 fixture、类型/静态及稀疏构建资源失败保留；未运行全库、真实 Worker 或 P0。CLI 编译使用原 tsc 与 verify-cli-bin 步骤，未执行全局 install-dev-cli；既有 CLI include 漏项经批准仅加 codex-experiment-home.ts 一行，未改其环境源码。
+
+## 批准正文修复与真实 Worker 准备（2026-09-07）
+
+本批登记为“受管派发服务层修复候选”。R1 拒绝有依赖任务，尚不支持依赖代码落地；R2 仅恢复已验证的原协调者；R5 约束 Run 资源与尝试，不控制账户费用。尚未实现完整 v0.1。
+
+### 实际用户流程与证据
+
+| 用户操作 | 当前实际行为 | 验证层级 |
+|---|---|---|
+| 在批准计划的 Task 中填写 spec 正文，再用 Fork CLI 的 run-use --kernel-config 启用 | 原文进入持久化 kernel_config，包含 Unicode、CRLF、多行及首尾空白 | 真 CLI/注册 RPC/SQLite；执行资源为测试替身 |
+| 修改原生 Task.spec，或修改调用端原计划对象 | 派发仍发送原批准正文，不采用可变文字 | 真 handler 到 sendTerminalAgentPrompt 参数断言 |
+| 明确重新批准含新正文的计划 | 后续派发才发送新批准正文 | 真 runUse 与 SQLite |
+| 旧计划没有批准 spec | 仍可读取；worker-start 在 Dispatch、mutation receipt、工作区和终端创建前报 kernel_task_body_required；补正文并重新批准后继续 | 红绿回归保留，缺正文不再静默放行 |
+| --kernel-off | 保持原生任务正文发送 | 原有关闭回归保留 |
+| 匹配 Fork CLI/候选运行时的真实独立 Worker | 尚未启动；送达、工作区、实际提交、测试、完成、停止均未验收 | 不以以上服务测试或日常 Orca 的开发 Worker 代替 |
+
+新增批准正文是 PlanTask.spec，可选字段兼容旧 schemaVersion 1 的读取，提供时必须是非空字符串；派发必须有该字段。原生可变 Task.spec 不再是受管授权来源，也不作自动快照或临时 fallback。其他 Task 的正文不随当前任务发送。
+
+### 来源、检查与范围
+
+A 来源 b0f6dcda635d99f91906d54286f55738b6c5495b；B 合并 A 的历史提交 9e63f6144f61d66955dcf4086c78e03941a1c0da；B 正文修复 42c740fb1631a377c0e2d6b17e365f6b77537066。候选 64d28fdb4834b5f104c9f64be958399f2f9ffe3c 保留上批 8d7e1a7/f3a3521 成果；没有 reset 或强推。生产代码仅改 kernel-plan.ts 和 kernel-task-contract.ts。固定上游仍为 f32ce859047a85a3ea4f507f633604dfbf596a0e（v1.4.188），许可证及工程配置不变。
+
+最终对应回归使用原 Vitest 配置逐文件 list/run：Plan 129、持久化 20、服务/CLI 组合 69、CLI 21，共 4 文件发现与执行 239 项，0 失败/跳过。重复返修复验不累加为新增用例。原三项目 pnpm run typecheck 通过；Node 项目 listFilesOnly 收录生产模块与服务回归。CLI、main、preload、renderer 构建通过，但这些构建不是运行时验收。
+
+编译 CLI 复用原 build:cli 的 tsc 和 verify-cli-bin 步骤，仅省去全局开发命令安装；未执行 install-dev-cli.mjs，未替换 CURRENT 的 orca 命令。构建后的 node out/cli/index.js orchestration run-use --help 实际显示 --kernel-config 与 --kernel-off。
+
+B 所辖文件静态检查通过。合成候选曾因保留旧 CLI 组合回归导致 max-lines=846，已退原 B 定向返修，保留全部用例和断言、不修改规则。原 Plan 两文件 oxlint 仍失败；同配置对父版本和本批均得到 18 项相同规则诊断，原始日志保留，不把它报告成通过，不扩大成全仓加固。
+
+命令模板（所有源码检查在原 candidate 工作树）：
+
+```powershell
+$env:ELECTRON_OVERRIDE_DIST_PATH='C:/Users/DW/AppData/Local/OrcaKernelLab/node-test-electron-disabled'
+node node_modules/vitest/vitest.mjs list --config config/vitest.config.ts <单个对应测试路径> --json=<仓外列表文件>
+node node_modules/vitest/vitest.mjs run --config config/vitest.config.ts <同一测试路径> --reporter=json --outputFile=<仓外结果文件>
+pnpm run typecheck
+node node_modules/typescript/bin/tsc -p config/tsconfig.cli.json --outDir out --composite false --incremental false
+node config/scripts/verify-cli-bin.mjs --fix-executable --fix-package-json
+$env:ORCA_ELECTRON_VITE_TARGET='main' # preload / renderer 分别同样执行
+node config/scripts/run-electron-vite-build.mjs --config config/electron-vite-target.config.ts --ignoreConfigWarning
+```
+
+原始日志与测试 JSON：实验目录 body-smoke-20260907；B 红绿证据 evidence/b-body-ctx1e26219942e8。早期 renderer 缺固定上游资源导致失败，已恢复所需资源后通过；大范围 promisor 下载网络失败和不完整历史 tar 均保留，未继续重复失败路线。测试用 Electron override 只是防止隐式安装，不能用它启动真实运行时。
+
+### 尚待批准的精确本地安装动作
+
+尚未执行：将本机已有缓存 electron-v43.1.0-win32-x64.zip（144237574 字节）验证并解压至 C:/Users/DW/AppData/Local/OrcaKernelLab/runtime/electron-43.1.0-win32-x64；向 candidate 的 node_modules/windows-native-registry/build/Release/native.node 补入现有 Orca 所带同版本 3.2.2 产物（155408 字节，已只读加载成功）。不安装系统组件、不提权、不重启、不改 CURRENT、不新增费用；如还需下载或编译其他原生依赖，再据实际错误收窄处理。
+
+随后以本批构建产物和独立 body-smoke-20260907/runtime-profile 启动桌面候选，使用匹配的 Fork CLI。上游 serve 默认绑定 0.0.0.0，本批没有执行它，也不申请扩大网络暴露；独立桌面配置默认绑定 loopback，仍须启动后实核。模型认证和原生 PTY 是否可用要在真实启动后验证，不拷贝完整记忆或认证内容入库。
+
+真实独立任务通过后才开展最小可信成果验收、依赖代码落地及两轨整合；12 次正式 CURRENT/KERNEL 对照不启动。
+
+---
+
 # Orca v1.4.188 接入与服务层验收
 
 本页保留首批接入研究，并记录 2026-09-07 本批实际实现。唯一执行状态见 [V01-TODO.md](../V01-TODO.md)，下方“首批历史研究”不是另一份活跃计划。
+
+## 2026-09-07 分级执行批次：R1–R5
+
+最终源码候选 `8d7e1a7508f8f9cfe45d148f70ad6c2a5d42054d`，继续基于固定 U。R4 来源 `ef7c1f6c662f3695ba8aa58ef684da7bc27831e5`；R1/R3/R2/R5 分别为 `a32a28d1c22be9fc5a995e3d846496c3d65ca7a1`、`ecfb04e38e2a0116020faa5004b4ddb78c6bc6f4`、`6d88ff7f08d0db09fabf92bcf24fb362a081f390`、`ea4283d47fe1e633a9f2f487cdeb80d89f88e709`。集成 `2f70b945c8d11d4150919897405653e9bfad2d42` 增加 4 个组合用例，随后仅精简该测试文件的辅助代码以满足上游静态规则；没有删用例或放宽断言。
+
+| 项目 | 实际行为与验证 |
+|---|---|
+| R1 依赖 | 受管 dependsOn 非空任务在资源前明确拒绝，原生 completed 不作为 accepted/代码落地证明；合法独立任务仍进入原流程。 |
+| R2 恢复 | 服务端从已验证协调者生成 owner，客户端不能配置 owner。原协调者切换 Run 后可恢复，原 bindRun 事务内重查 owner/配置/generation，再执行原绑定和 fencing。旧无锚只兼容唯一原生历史协调者匹配；无历史、多历史、不同当前 owner 或损坏 owner 拒绝。 |
+| R3 契约 | 实际 sendTerminalAgentPrompt 携带当前 Task 的服务端契约，包括 objective/nonGoals/baseCommit 和任务字段；不注入整个计划，也不采纳可扩权的 Task.spec。关闭时使用原 Task.spec。 |
+| R4 CLI | Fork 的 CLI 新增 run-use --kernel-config <file> / --kernel-off，互斥；省略不改配置。配置只接受 repoId/plan/可选 limits，经原 runUse RPC 持久化。旧服务未确认、响应值不符均不报成功；服务端补 owner/默认 limits 合法。 |
+| R5 容量 | 原 BEGIN IMMEDIATE 内以原 Run Dispatch/Worker/终端资源计数。默认并发 2、单 Task 尝试 2、Run 尝试 2×首次计划任务数；配置须有限正整数。失败、历史 Task、换 key、换计划和 off/on 不清零；停止中、未知、残留及未释放资源保守占位。两请求争最后槽位只一项创建资源，拒绝方没有 Dispatch/receipt。 |
+
+schema 31 加性增加 runs.kernel_default_max_attempts，固化首次默认总次数；包括旧 v30 配置首次关闭再换大计划。v29/v30 文件数据库迁移、重开及历史保留受测。原 tasks/all reset 会删除计数事实，现对有配置或历史默认锚的数据库明确拒绝，包括关闭/损坏配置；RPC 在停止 relay 前拒绝、DB 原事务内再查。messages 和纯原生数据库 reset 保持原行为。没有新增清空受管历史的通道；这是 Run 内资源约束，不是跨 Run 费用控制。
+
+以上 CLI 是 Fork 源码入口，日常 CURRENT 运行时未升级。使用 Fork 的匹配 CLI/服务时，通过已绑定的真实协调者执行：
+
+```text
+orca orchestration run-use --id <已有Run-ID> --kernel-config <JSON文件>
+orca orchestration run-use --id <已有Run-ID> --kernel-off
+```
+
+JSON 的 plan 沿用现有 Plan，task.key 必须是真实 Run Task ID，不能填写内部 owner。受管低层/远端/复用终端等未支持路径仍明确拒绝。关闭模式的派发保持原生，历史保护仍保留。
+
+### 本批实际测试
+
+使用原 Vitest 配置，**12 文件实际发现/执行 381 条，381 通过、0 失败、0 跳过**。最终按文件分别执行并保留 12 份原始 JSON；汇总不是一次 Vitest 原始输出。受影响的服务文件在最后辅助代码返修后另行复验 66 条，不能把重复复验加成 447 个不同用例。
+
+| 文件 | 发现 / 执行 / 通过 |
+|---|---:|
+| kernel-plan.test.ts | 121 / 121 / 121 |
+| kernel-run-config.test.ts | 19 / 19 / 19 |
+| kernel-run-limits.test.ts | 51 / 51 / 51 |
+| orchestration-kernel.test.ts | 66 / 66 / 66 |
+| orchestration-runs.test.ts | 18 / 18 / 18 |
+| orchestration-tasks-dispatch.test.ts | 30 / 30 / 30 |
+| orchestration-workers-new-worktree.test.ts | 20 / 20 / 20 |
+| orchestration-federation.test.ts | 18 / 18 / 18 |
+| orchestration-worker-dispatch-db.test.ts | 12 / 12 / 12 |
+| orchestration-version-skew-migration.test.ts | 2 / 2 / 2 |
+| orchestration-run-cli.test.ts | 21 / 21 / 21 |
+| orchestration-reset-db.test.ts | 3 / 3 / 3 |
+
+4 个组合用例用真实临时配置文件和真实 CLI handler，经传输边界适配调用已注册 RPC 与 SQLite：合法含服务端 owner/默认 limits、非法保持原配置且无资源效果、关闭后原生启动、无开关保持配置。使用 vi.importActual 加载真实 CLI，避免跨 composite 项目静态导入；CLI 实现仍由原 CLI 类型项目检查。没有 mock CLI handler、runUse、validatePlan 或数据库。
+
+```powershell
+$env:ELECTRON_OVERRIDE_DIST_PATH='C:/Users/DW/AppData/Local/OrcaKernelLab/node-test-electron-disabled'
+$files = @(
+  'src/main/runtime/orchestration/kernel-plan.test.ts'
+  'src/main/runtime/orchestration/kernel-run-config.test.ts'
+  'src/main/runtime/orchestration/kernel-run-limits.test.ts'
+  'src/main/runtime/rpc/methods/orchestration-kernel.test.ts'
+  'src/main/runtime/rpc/methods/orchestration-runs.test.ts'
+  'src/main/runtime/rpc/methods/orchestration-tasks-dispatch.test.ts'
+  'src/main/runtime/rpc/methods/orchestration-workers-new-worktree.test.ts'
+  'src/main/runtime/rpc/methods/orchestration-federation.test.ts'
+  'src/main/runtime/orchestration/orchestration-worker-dispatch-db.test.ts'
+  'src/main/runtime/orchestration/orchestration-version-skew-migration.test.ts'
+  'src/cli/handlers/orchestration-run-cli.test.ts'
+  'src/main/runtime/orchestration/orchestration-reset-db.test.ts'
+)
+foreach ($file in $files) {
+  $name = [IO.Path]::GetFileNameWithoutExtension($file)
+  node node_modules/vitest/vitest.mjs list --config config/vitest.config.ts $file --json="$evidence/$name.list.json"
+  if ($LASTEXITCODE -ne 0) { throw 'Discovery failed' }
+  node node_modules/vitest/vitest.mjs run --config config/vitest.config.ts $file --reporter=default --reporter=json --outputFile.json="$evidence/$name.results.json"
+  if ($LASTEXITCODE -ne 0) { throw 'Tests failed' }
+}
+pnpm run typecheck
+# 新模块收录补充证据；不替代上述类型检查：
+pnpm exec tsc --noEmit -p config/tsconfig.node.json --listFilesOnly
+pnpm exec tsc --noEmit -p config/tsconfig.cli.json --listFilesOnly
+$env:ORCA_ELECTRON_VITE_TARGET='main'
+node config/scripts/run-electron-vite-build.mjs --config config/electron-vite-target.config.ts --ignoreConfigWarning
+```
+
+复现前将 $evidence 指向自行创建的仓外日志目录。实际日志在实验目录 tier-candidate-20260907。三项目类型检查退出 0；清单实测含 kernel-run-limits、kernel-task-contract、组合测试及 CLI 新模块/测试。21 个变更 TS 文件 oxfmt/oxlint 均通过。main 构建退出 0，3117 modules；最后仅测试辅助代码改变，生产源码与该构建一致。没有修改上游许可证、锁文件或工程配置。
+
+### 异常与验收边界
+
+- 多路径传参曾产生零测试失败，已保留 initial-no-tests-observed.results.json；改为逐文件执行并核对原始 JSON。未将零测试或合成结果当成原始成功回执。
+- 合并会重新移除 sparse 工作树中预先补齐的资源；总控在合并后从固定 U 原样恢复缺失 icon/app-icons/tray/notification-sounds，资源 diff 为零，再只重跑 main 成功。
+- Windows checkout 的 CRLF 导致格式检查失败；格式化后非测试文件没有 Git 内容差异。组合测试先超过 800 行限制，随后精简辅助代码，保留 4 个组合用例及全部语义，未关闭静态规则。
+- 原集成 worker_done 虽报告 succeeded，但构建尚未过，总控未据此验收。释放发生 release_unknown/tab_not_found，实测终端已 operator_close；用原认证目录和同一 Codex session 恢复 terra/medium，再完成返修。首次 R4 和恢复后输入回执的 agent_prompt_stalled 均保持 failed，以普通源码交付验收，没有伪造 worker_done。最后 Git 确认框的自动答复被 Orca 以 agent_prompt_blocked 阻止，已取消挂起命令；总控在原授权 Git 环境代执行最终一文件 commit/普通 push，不扩大权限。
+- 原主对照仍只有 CURRENT/KERNEL。未运行真实 Kernel Worker/停止闭环、完整所有 Vitest、完整桌面包或 12 次正式实验；G03 隔离和可信 accepted/merged/依赖代码落地仍未完成。没有重试 Docker/WSL、提权、扩大权限、购买额度或切换付费通道。
+
+## 上批 275 条验收历史
+
+以下保留上批候选的实际记录；其中 schema 30 和无 CLI 的表述是历史状态，当前以本批增量为准。
 
 ## 已实现入口
 
@@ -145,3 +325,35 @@ if ($LASTEXITCODE -ne 0) { throw 'Main build failed' }
 ## 迁移来源（2026-09-06）
 
 本文必要内容迁自 [研究提交 ad997b7](https://github.com/songconmaisaix31-design/Multi-agent-kernel/commit/ad997b786f451a6e3fea444b52a601c8b0c6ed33)，组合交付保存在 [08d1ff6](https://github.com/songconmaisaix31-design/Multi-agent-kernel/tree/08d1ff6b8f2a0df4cce538213d7943508a18e5d2)。本文的未执行/建议描述是该批研究状态，实际实现和验收以本 Fork 的 [唯一看板](../V01-TODO.md) 为准。上游 tag 的 Git 解引用现已实测为 U。未复制旧库工程配置、许可证、完整记忆或认证数据。
+
+## M2 前置：只读 Git 候选范围检查（2026-09-08，B）
+
+本批新增 `reviewKernelCandidate({ plan, taskKey, repoPath, baseCommit, candidateCommit, executionHost })`，返回 `scope-checked`（固定 SHA、旧/新路径集合）或 `rejected`（错误码、原因）。调用者必须提供服务端已批准的 Plan 和宿主归属；入口仍调用 A 的 `validatePlan`，不从候选文件读取授权。**当前无 CLI/RPC 消费者接线，范围通过不是 accepted/integrated，也不是 Worker 或验收正文执行结果。**
+
+| 规则 | owner | 执行点 | 失败处理 | 测试/提交证据 | 状态 |
+|---|---|---|---|---|---|
+| 词法 Plan、任务 key、文件/目录边界 | A 类型/validator；B 调用 | `kernel-candidate-review.ts` 入口、`kernel-candidate-review-paths.ts` | 非法 Plan、未知任务、越界/特殊路径拒绝 | 本批真实 Git 入口回归；复用既有 validator | 运行已验证 |
+| 显式完整 SHA、对象确为 commit、批准基线一致、base 为 candidate 祖先 | B | 原生 `gitExecFileAsync`：`cat-file`、`merge-base --is-ancestor` | 缺对象、错误、无关历史均 rejected；禁用 replace，拒绝 shallow/grafts/partial clone | [代码 706cf15](https://github.com/songconmaisaix31-design/orca-kernel/commit/706cf15ffc9d4328167ffbdb4c03aa72be620ac2) | 运行已验证 |
+| 完整 NUL 端点差异与两端树交叉核对；写权只检查实际增删改路径 | B | `diff-tree -r --no-renames`、`ls-tree -r -z --full-tree`、changed blob 检查；旧/新树分别校验文件/目录形态 | 空差异、遗漏、解析/截断/读取错误拒绝；特殊路径和大小写歧义拒绝；真实越界增删改返回 out_of_scope | 初批 63/63 保留为历史；本次 copy/形态语义返修证据见下文 | 运行已验证 |
+| 只支持 native 本地普通/linked Git worktree；变更模式仅 `100644` | B | 仓库路径/元数据检查及 raw 两端模式检查 | SSH/WSL/UNC、普通非 Git 目录、symlink/gitlink/执行位变化明确拒绝，无本地 fallback | 同上，覆盖受限宿主及真实 linked worktree | 运行已验证 |
+| 固定 argv，不用 shell；禁止外部 diff/textconv/hooks；每命令 15 秒、输出上限 2 MiB | B | 既有 runner，加显式只读选项、清除继承 Git 覆盖变量 | Git 失败/超限拒绝，不把部分输出当空差异 | 注入输入、replace、恶意配置、真实大树回归；Node-only | 运行已验证 |
+| 依赖任务、可信验收执行、正式接纳/集成 | 后续总控决定 | 本批依赖入口拒绝；其余无执行点 | 不放开依赖，不执行 acceptance，不写状态或自动合入 | 本批未执行真实 Worker、验收命令或候选 Electron | 未支持 |
+
+验证环境：Windows，Git `2.47.0.windows.1`、Node `24.16.0`、pnpm `10.24.0`；单文件 Vitest 实际发现并通过 63 项，`pnpm run typecheck:node`、Node `tsc --listFilesOnly` 收录三份新 TS、改动代码 oxlint/oxfmt、diff check 均通过。日志位于仓外 `C:/Users/DW/AppData/Local/OrcaKernelLab/evidence/continuation-20260908-003901/B`；Node 测试设置进程级 `ELECTRON_OVERRIDE_DIST_PATH`，没有安装依赖或启动 Electron。首轮 7 项 fixture 失败源于 Windows `update-index` 丢弃特殊名称，改用真实 `mktree` 并先断言树内名称后通过，未削弱负例。
+
+本次范围语义返修以 `64c9b36` 为基线：生产代码未改时新增 9 例实际为 7 失败、2 通过（未变来源副本误报 out_of_scope，形态转换误报 unsafe_path）；修复后同组 9/9，完整候选 72 + Plan 129 实际发现并执行 201/201。首轮完整组清理 EBUSY、类型检查缺少五个已跟踪输入及新测试风格失败均保留；最终 Node 类型及变更 TS lint/format 通过。仓外证据位于 `B-scope-semantics`，本次未复跑历史 456 例、构建或真实 Worker。
+
+命令遵守 [Git 2.25 基线](reference/git-compatibility.md)，选项依据 [2.25 diff-tree 文档](https://git-scm.com/docs/git-diff-tree/2.25.0)；本机未另装或实跑 Git 2.25。范围是两棵固定提交树的净差异，不推断 rename/copy 或内容来源；未改动的范围外来源不需要写权，新增副本只检查目的路径，移动按旧路径删除和新路径新增检查。旧树和新树分别理解文件/目录形态，范围内 file-to-dir 与 dir-to-file 可以通过；不审计中间已回退的提交、不锁定仓库元数据、不证明工作目录 junction/hardlink 沙箱或仓库文件的抗并发篡改能力。范围结果尚未接入接纳流程，后续调用者仍须验证批准来源及实际宿主，并另行完成受信验收与集成。
+
+## 本批监督契约（2026-09-08，主控）
+
+| 规则 | owner | 执行点 | 失败处理 | 验证证据 | 状态 |
+|---|---|---|---|---|---|
+| Task 明确基线与唯一写入路径；共享接口由 B 单一维护 | 主控派发，A/B 执行 | 原生 Task.spec 与提交差异审查 | 越界退回原 owner；不冒充文件系统沙箱 | 看板所列三 Task；候选 `479322a` 相对 `e39c3c7` 仅四文件 | 提示约定 |
+| 开发 Run 的原生身份 fencing；候选独立身份仍待测 | 原生 Run 服务；主控 / 环境 terra 核对 | 日常 run-current、generation 与当前 Delivery；仅原生服务拒绝属于程序强制 | consumer_fenced 为程序拒绝；后续核实绑定、不复制身份为操作约定 | 开发 `run_17a07a644aaa` / generation 2；不据此声称候选身份已验证 | 程序已执行 |
+| 真实工具审批保留；续接先确认旧执行者不再写入 | 主控 / 原执行者 / 用户 | 工具报告 readiness / 审批事实；续接及换人决定由监督者落实 | 只暂停依赖操作，不代按、不换 Agent 绕过是监督约定，非本模块自动拦截 | A readiness 拒绝是工具事实；terra 等人工恢复；B 两批完成后 retain | 提示约定 |
+| 源码候选经测试和固定提交审查后普通集成 | B 源码与串行集成，主控验收 | 原生 worker_done、当前 Delivery ACK、Git 快进 | 失败回原 owner，保存首轮失败，不放宽断言 | 历史 `479322a` 的 13 文件发现/执行 456/456、Node 类型及 main 构建；本次未复跑，本地报告索引在看板 | 运行已验证 |
+| 实际模型与用量以会话记录为准；未通过功能不启动 12 次比较 | 主控监督 | 工具读取 turn_context / 计数；人工或 Agent 执行里程碑与预算策略 | 未知单列，不编造费用或实验效果；不声称已有自动预算或实验启动门 | 原批同一 B astra/high、A/terra 增量 0 的快照记录保留；非自动预算控制证据 | 提示约定 |
+| 正式成果接纳、依赖代码落地与真实 Worker 停止/接续 | 后续原 owner | 当前无完整执行点 | 维持未通过，不将范围检查等同接受成果 | M1–M5 剩余条件见唯一看板 | 未支持 |
+
+本表区分工具采集事实、人工/Agent 提示约定、实际调用入口的程序强制，以及具体运行验证；“运行已验证”只覆盖列明的命令和边界，不表示自动接纳门。派发文件范围、换人和预算策略尚需监督者落实，不标成程序已执行；真实 Git 回归及服务层终端/资源替身均不是真实 Worker。历史通过/失败记录不变，也不表示不可篡改审计、强制写入隔离或跨平台运行证明。

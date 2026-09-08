@@ -1,5 +1,29 @@
 # Windows managed smoke — 2026-09-07
 
+## Private readiness observation (default off)
+
+Only the Fork experiment launcher accepts `--readiness-diagnostics`. Before a
+targeted terminal wait, create `private-readiness/capture.json` inside the existing
+experiment profile: `{"terminal":"term_<actual-handle>","maxSnapshots":1}`.
+The directory must already exist, remain private, and resolve without redirects.
+The first valid configuration is fixed for that runtime; the limit is 1–5 result
+observations, including failed capture attempts. No directory, polling service,
+debug port, Run, identity or approval is created by this option.
+
+The observer serializes the result and retained tail inputs synchronously, checks
+the existing handle/PTY binding before and after state collection, and writes an
+exclusive private file. It records title observation stamps separately from epoch
+times, fresh hook status, lifecycle state and missing values. It does not read a
+screen or inspect foreground processes. `fallback-result-only` records describe
+the result-time state, not an atomic snapshot of an earlier asynchronous process
+probe; only synchronous `waitForTerminal` observations support exact text-decision
+replay. Event-only resolutions and timeouts are not captured by this narrow hook.
+Existing text redaction is applied before disk writes; `redactionChangedInputs`
+means byte-exact replay has not been established. Oversized snapshots produce only
+a size-limit error. I/O, configuration and identity errors never alter wait results.
+Keep these files private: they are bounded diagnostic fragments, not publishable
+session exports. This instrumentation changes no readiness or authorization rule.
+
 ## Scope and provenance
 
 - Candidate: `songconmaisaix31-design/kernel-v01-candidate` at `f3f675dc07119c3c4bc299796dee36569043d49a` (clean at launch).
@@ -44,9 +68,9 @@ Command evidence was retained in the active terminal transcript rather than dupl
 
 Historical note: the pre-existing `usage-start.json`/`usage-deltas.json` records were read only and do not establish this continuation's usage. This candidate smoke has created no model session; the environment executor session identifier is recorded only for coordinator correlation, and its actual token interval is owned by the unique dashboard rather than inferred or counted in this report.
 
-## Required next action
+## Historical next action before login completed
 
-The candidate desktop and the official experiment-scoped login are live, but authentication remains pending user browser confirmation. After successful confirmation is observed only through experiment-home state, the bounded Run → Task → `worker-start` / observable `worker-stop` path may proceed under the existing one-task/one-stop budget; until then, do not start a model Worker, copy daily credentials, or begin another paid flow.
+At the prior bootstrap checkpoint, the candidate desktop and experiment-scoped login were live while browser confirmation was pending. Login subsequently succeeded; the current admission result and remaining identity boundary are recorded below. The one-task/one-stop budget, no credential-copy rule, and no additional paid flow remain unchanged.
 
 ## Managed Worker admission attempt
 
@@ -68,4 +92,6 @@ On the authorized candidate restart, startup reported missing sparse `resources/
 
 Precise follow-up: both missing skill files are tracked in the fixed candidate `HEAD` and are normal startup/build inputs, not generated credentials or a new resource design. They were materialized from that same Git object without a worktree diff or installation. The reported messages were emitted during termination of the prior owned candidate launcher session, not from a successful replacement start; no approved-runtime Electron process remains. Source review locates the hook grant in `src/main/codex/codex-hook-trust-grant.ts`: native app-server receives `CODEX_HOME=runtimeHomePath`, and its ledger path is derived from the managed home. The only observed ledger/provenance files realpath under `native-run/profile/codex-runtime-home`; no daily-home path or link was observed. Skill discovery (`src/main/skills/discovery.ts`) scans roots and returns inventory; the bounded log reports roots/IDs and no source write/copy/enable operation. Its scan therefore is not evidence of a daily write, although the earlier grant remains an experiment-profile write that must be reviewed before dispatch.
 
-The hardened diagnostic child now reports exact candidate repo/profile/runtime and a single `Path` key. A real PowerShell child verified all three approved paths and resolved `Get-Command orca` exactly to `native-run/profile/cli/bin/orca.cmd`. The targeted 37-test lane includes the CLI run-binding handler and runtime current-authority test alongside launcher/wrapper tests; it preserves ordinary identity fencing and the real handler path rather than treating the earlier success proof as a mock. No candidate Agent terminal, Worker, model session, or retry was created during this follow-up.
+The hardened diagnostic child reports exact candidate repo/profile/runtime and a single `Path` key. A real PowerShell diagnostic child resolved `Get-Command orca` exactly to `native-run/profile/cli/bin/orca.cmd`; this is not yet a new candidate terminal routing result. The existing 37-test lane covers separate components and does not establish the requested native launch-to-CLI identity connection. A new connection draft failed because the production PTY layer injects `ORCA_TERMINAL_HANDLE` after the captured runtime spawn environment; that draft is not counted as passing coverage. No candidate Agent or Worker was created.
+
+At the 22:43 closeout, launcher/wrapper regressions passed (2 files, 4 tests). Source fixes are candidate commits `7bf194e38ea721d06d9d37f1e451c2f653aa817e` and `14f6a05ac84f53bb5add71d6389383361478fd26`. All three fixed-HEAD skill bundle inputs are present without resource changes. Experiment-home hook registration and read-only skill inventory were reviewed within the existing authorization. The resumed implementation session is waiting at a single interactive confirmation for the already-authorized candidate launcher; Orca CLI rejects both ordinary input and the confirmation key with `agent_prompt_blocked`. The launcher has not executed from that prompt. No replacement Run, native coordinator, Kernel persistence, Worker artifact/commit/completion, or independent stop result exists. The unique board records the precise manual action and usage segments, including one recovery/reset. This remains an incomplete smoke, not v0.1 acceptance.
