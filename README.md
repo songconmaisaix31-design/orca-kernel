@@ -1,3 +1,15 @@
+# Orca-Kernel · Kernel 协作实验
+
+这是基于 **[stablyai/orca](https://github.com/stablyai/orca)** 的实验 fork，用于探索多 Agent 任务派发、资源归属与结果验收约束。上游 Orca 提供桌面应用与工作区能力；本仓库的增量是 Kernel 执行与验证实验。
+
+**入口与阶段**：Kernel 增量位于 [`kernel/v01-managed-dispatch`](https://github.com/songconmaisaix31-design/orca-kernel/tree/kernel/v01-managed-dispatch) 分支，可从其中的 [orchestration 源码与测试](https://github.com/songconmaisaix31-design/orca-kernel/tree/kernel/v01-managed-dispatch/src/main/runtime/orchestration) 开始了解。当前默认分支保留上游基线；实验代码与测试不代表已完成跨平台产品验收。
+
+当前独立 CLI 方向的主入口是 **[agent-kernel-cli](https://github.com/songconmaisaix31-design/agent-kernel-cli)**。它是另一套 Windows 单任务原型，不能把此处的多 Agent 实验视为新 CLI 的现有能力。
+
+以下保留上游 Orca 的介绍、下载、署名与许可说明；其中的下载入口指向上游产品。
+
+---
+
 <h1 align="center">
   <a href="https://onOrca.dev"><img src="resources/build/icon.png" alt="Orca" width="64" valign="middle" /></a> Orca
 </h1>
