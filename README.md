@@ -2,7 +2,7 @@
 
 这是基于 **[stablyai/orca](https://github.com/stablyai/orca)** 的实验 fork，用于探索多 Agent 任务派发、资源归属与结果验收约束。上游 Orca 提供桌面应用与工作区能力；本仓库的增量是 Kernel 执行与验证实验。
 
-**入口与阶段**：Kernel 增量位于 [`kernel/v01-managed-dispatch`](https://github.com/songconmaisaix31-design/orca-kernel/tree/kernel/v01-managed-dispatch) 分支，可从其中的 [orchestration 源码与测试](https://github.com/songconmaisaix31-design/orca-kernel/tree/kernel/v01-managed-dispatch/src/main/runtime/orchestration) 开始了解。当前默认分支保留上游基线；实验代码与测试不代表已完成跨平台产品验收。
+**入口与阶段**：本代码树整合了上游 v1.4.188 和已备份的 Kernel 实验分支。实现与测试位于 `src/main/runtime/orchestration`，历史证据见 [集成说明](docs/ORCA-INTEGRATION.md)。历史验收不代表本次合并候选已通过跨平台产品验收。
 
 当前独立 CLI 方向的主入口是 **[agent-kernel-cli](https://github.com/songconmaisaix31-design/agent-kernel-cli)**。它是另一套 Windows 单任务原型，不能把此处的多 Agent 实验视为新 CLI 的现有能力。
 
@@ -48,7 +48,7 @@
 
 Monitor and steer your agents from your phone — get notified when an agent finishes and send follow-ups from anywhere.
 
-[iOS App Store](https://apps.apple.com/us/app/orca-ide/id6766130217) · [TestFlight](https://testflight.apple.com/join/YjeGMQBA) · [Android APK 0.0.37](https://github.com/stablyai/orca/releases/download/mobile-android-v0.0.37/app-release.apk) · [Docs →](https://www.onorca.dev/docs/mobile)
+[iOS App Store](https://apps.apple.com/us/app/orca-ide/id6766130217) · [TestFlight](https://testflight.apple.com/join/YjeGMQBA) · [Android APK 0.0.43](https://github.com/stablyai/orca/releases/download/mobile-android-v0.0.43/app-release.apk) · [Docs →](https://www.onorca.dev/docs/mobile)
 
 </td>
 <td width="50%">
@@ -242,7 +242,7 @@ yay -S stably-orca-bin
 Pair with your desktop app to monitor and steer your agents from your phone.
 
 - **iOS:** [Download on the App Store](https://apps.apple.com/us/app/orca-ide/id6766130217) or [join TestFlight](https://testflight.apple.com/join/YjeGMQBA)
-- **Android:** [Download APK 0.0.37](https://github.com/stablyai/orca/releases/download/mobile-android-v0.0.37/app-release.apk)
+- **Android:** [Download APK 0.0.43](https://github.com/stablyai/orca/releases/download/mobile-android-v0.0.43/app-release.apk) · [Install guide](https://www.onorca.dev/docs/android-apk)
 
 ---
 
@@ -250,9 +250,10 @@ Pair with your desktop app to monitor and steer your agents from your phone.
 
 - **Discord:** Join the community on **[Discord](https://discord.gg/fzjDKHxv8Q)**.
 - **Twitter / X:** Follow **[@orca_build](https://x.com/orca_build)** for updates and announcements.
-- **WeChat:** Scan to join the Orca community WeChat group 7.
+- **WeChat:** Scan to join the Orca community WeChat group 7. If it is full, use group 8.
 
-  <img src="docs/assets/wechat-qr-group7.jpg" alt="WeChat group 7 QR code for the Orca community" width="160" />
+  <img src="docs/assets/wechat-qr-group7.jpg" alt="WeChat group 7 QR code for the Orca community" width="160" />&nbsp;&nbsp;
+  <img src="docs/assets/wechat-qr-group8.jpg" alt="WeChat group 8 QR code for the Orca community" width="160" />
 
 - **Feedback &amp; Ideas:** We ship fast. Missing something? [Request a new feature](https://github.com/stablyai/orca/issues).
 - **Privacy:** See the [privacy &amp; telemetry docs](https://www.onorca.dev/docs/telemetry) for what anonymous usage data Orca collects and how to opt out.

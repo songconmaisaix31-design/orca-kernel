@@ -3,6 +3,10 @@ import { existsSync, mkdirSync, readFileSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { join, resolve } from 'node:path'
 import { getVersionManagerBinPaths } from '../codex-cli/command'
+import {
+  assertExperimentCodexHomeConfiguration,
+  getExperimentCodexHomePaths
+} from '../codex/codex-home-paths'
 import { getMainE2EConfig } from '../e2e-config'
 
 const DEV_PARENT_SHUTDOWN_GRACE_MS = 3000
@@ -64,6 +68,20 @@ export function configureElectronNetworkCompatibility(
   }
   // Why: Chromium's HTTP/2 switch is process-wide and only applies before the first session exists, so set it during early startup.
   app.commandLine.appendSwitch('disable-http2')
+}
+
+export function disableUnsupportedChromiumFeatures(): void {
+  appendDisabledChromiumFeatures(['FedCm'])
+}
+
+function appendDisabledChromiumFeatures(features: string[]): void {
+  const existingFeatures = app.commandLine
+    .getSwitchValue('disable-features')
+    .split(',')
+    .map((feature) => feature.trim())
+    .filter(Boolean)
+  const disabledFeatures = Array.from(new Set([...features, ...existingFeatures])).join(',')
+  app.commandLine.appendSwitch('disable-features', disabledFeatures)
 }
 
 function getProcessPathDelimiter(): string {
@@ -137,6 +155,13 @@ export function patchPackagedProcessPath(): void {
 }
 
 export function configureDevUserDataPath(isDev: boolean): void {
+  const experiment = getExperimentCodexHomePaths()
+  if (experiment) {
+    // Why: configureOrcaUserDataPathEnv must retain the validated Electron profile.
+    assertExperimentCodexHomeConfiguration()
+    app.setPath('userData', experiment.userDataPath)
+    return
+  }
   const e2eConfig = getMainE2EConfig()
   if (e2eConfig.userDataDir) {
     // Why: the E2E suite launches a fresh Electron app for each spec. A
@@ -300,11 +325,7 @@ export function enableMainProcessGpuFeatures(): void {
     app.commandLine.appendSwitch('enable-features', features)
   }
 
-  const existingDisabledFeatures = app.commandLine.getSwitchValue('disable-features')
   // Why: IntensiveWakeUpThrottling clamps hidden-page timers to 1/min after 5min, delaying agent-done/bell notifications ~60s.
   // This opt-out is skipped under GPU fallback (win32-only today); if throttling ever reaches Windows it must move out of this path.
-  const disabledFeatures = ['IntensiveWakeUpThrottling', existingDisabledFeatures]
-    .filter(Boolean)
-    .join(',')
-  app.commandLine.appendSwitch('disable-features', disabledFeatures)
+  appendDisabledChromiumFeatures(['IntensiveWakeUpThrottling'])
 }

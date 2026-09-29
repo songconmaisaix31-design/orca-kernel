@@ -1,5 +1,7 @@
+import { revalidateKernelAcceptanceReply } from './methods/orchestration-kernel-acceptance'
 import { createHash } from 'node:crypto'
 import { isOrchestrationMutation } from '../../../shared/orchestration-rpc-contract'
+import { parsePaneKey } from '../../../shared/stable-pane-id'
 import type { OrcaRuntimeService } from '../orca-runtime'
 import { OrchestrationError } from '../orchestration/orchestration-error'
 import type { RpcRequest } from './core'
@@ -22,17 +24,29 @@ export class OrchestrationMutationExecutor {
   async run(
     request: RpcRequest,
     params: unknown,
-    invoke: (mutation?: DurableMutationInvocation) => Promise<unknown> | unknown,
+    invoke: (mutation?: DurableMutationInvocation) => unknown,
     callerFingerprintOverride?: string
   ): Promise<unknown> {
     const requestId = request.orchestrationRequestId
     if (!requestId || !isOrchestrationMutation(request.method, params)) {
       return await invoke()
     }
-    const callerFingerprint = callerFingerprintOverride ?? authenticatedCallerFingerprint(request)
+    const callerFingerprint =
+      callerFingerprintOverride ?? this.getLocalAuthenticatedCallerFingerprint()
     const payloadHash = createHash('sha256')
-      .update(JSON.stringify(canonicalize({ method: request.method, params })))
+      .update(
+        JSON.stringify(
+          canonicalize({
+            method: request.method,
+            params: replayStableCallerParams(this.runtime, params)
+          })
+        )
+      )
       .digest('hex')
+    const checkedReply = async (result: unknown): Promise<unknown> => {
+      await revalidateKernelAcceptanceReply(this.runtime, request, result)
+      return attachMutationReceipt(result, requestId, true)
+    }
     const key = `${callerFingerprint}:${requestId}`
     const db = this.runtime.getOrchestrationDb()
     const identity = { callerFingerprint, requestId, method: request.method, payloadHash }
@@ -60,14 +74,14 @@ export class OrchestrationMutationExecutor {
     if (begun.disposition === 'completed') {
       const active = this.inFlight.get(key)
       if (active) {
-        return attachMutationReceipt(await active, requestId, true)
+        return await checkedReply(await active)
       }
-      return attachMutationReceipt(JSON.parse(begun.row.receipt ?? 'null'), requestId, true)
+      return await checkedReply(JSON.parse(begun.row.receipt ?? 'null'))
     }
     if (begun.disposition === 'pending') {
       const active = this.inFlight.get(key)
       if (active) {
-        return attachMutationReceipt(await active, requestId, true)
+        return await checkedReply(await active)
       }
       if (request.method !== 'orchestration.workerRelease') {
         const recovery = getPendingWorkerStartRecovery(request.method, begun.row.receipt)
@@ -109,6 +123,10 @@ export class OrchestrationMutationExecutor {
       this.inFlight.delete(key)
     }
   }
+
+  getLocalAuthenticatedCallerFingerprint(): string {
+    return this.runtime.getOrchestrationDb().getOrCreateLocalMutationCallerFingerprint()
+  }
 }
 
 const executorsByRuntime = new WeakMap<OrcaRuntimeService, OrchestrationMutationExecutor>()
@@ -125,12 +143,31 @@ export function getOrchestrationMutationExecutor(
   return executor
 }
 
-export function authenticatedCallerFingerprint(request: RpcRequest): string {
-  const callerToken =
-    request.authToken ||
-    (request as RpcRequest & { deviceToken?: string }).deviceToken ||
-    'authenticated_transport'
-  return createHash('sha256').update(callerToken).digest('hex')
+export function fingerprintAuthenticatedPairingCredential(token: string): string {
+  return createHash('sha256').update(token).digest('hex')
+}
+
+function replayStableCallerParams(runtime: OrcaRuntimeService, params: unknown): unknown {
+  if (!params || typeof params !== 'object' || Array.isArray(params)) {
+    return params
+  }
+  const source = params as Record<string, unknown>
+  const result = { ...source }
+  for (const property of ['from', 'callerTerminalHandle'] as const) {
+    const handle = source[property]
+    if (typeof handle !== 'string') {
+      continue
+    }
+    const paneKey =
+      property === 'from' && typeof source.senderPaneKey === 'string'
+        ? source.senderPaneKey
+        : runtime.getTerminalPaneKey(handle)
+    if (paneKey) {
+      const leafId = parsePaneKey(paneKey)?.leafId
+      result[property] = leafId ? { paneLeafId: leafId } : { paneKey }
+    }
+  }
+  return result
 }
 
 function canonicalize(value: unknown): unknown {

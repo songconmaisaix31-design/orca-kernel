@@ -1,6 +1,5 @@
 import {
   cpSync,
-  existsSync,
   lstatSync,
   mkdirSync,
   readFileSync,
@@ -18,6 +17,20 @@ import {
   markCopiedResource,
   targetIsOwnedFallbackCopy
 } from './codex-managed-home-resource-copy-marker'
+import { observe, observeResolvedPathEntry } from './codex-path-observation'
+import {
+  assertExperimentCodexHomeTree,
+  getExperimentCodexHomePaths,
+  getUnvalidatedOrcaUserDataPath,
+  isExperimentCodexSystemHomeEnabled
+} from './codex-experiment-home'
+
+export {
+  assertExperimentCodexHomeConfiguration,
+  getExperimentCodexHomePaths,
+  isExperimentCodexSystemHomeEnabled,
+  ORCA_EXPERIMENT_CODEX_SYSTEM_HOME_ENV
+} from './codex-experiment-home'
 
 const CODEX_GLOBAL_INSTRUCTIONS_ENTRY = 'AGENTS.md'
 
@@ -33,6 +46,10 @@ const CODEX_SYSTEM_RESOURCE_ENTRIES = [
 ] as const
 
 export function getSystemCodexHomePath(): string {
+  const experimentHome = getExperimentCodexHomePaths()
+  if (experimentHome) {
+    return experimentHome.systemHomePath
+  }
   return join(homedir(), '.codex')
 }
 
@@ -52,29 +69,20 @@ export function getCodexSessionBackfillStateDirPath(): string {
 }
 
 export function getOrcaUserDataPath(): string {
-  if (process.env.ORCA_USER_DATA_PATH) {
-    return process.env.ORCA_USER_DATA_PATH
-  }
-  // Why: CLI hook commands import this module outside Electron. Mirror the CLI
-  // runtime metadata path so offline hook status/on/off uses the same userData.
-  if (process.platform === 'darwin') {
-    return join(homedir(), 'Library', 'Application Support', 'orca')
-  }
-  if (process.platform === 'win32') {
-    return join(process.env.APPDATA ?? join(homedir(), 'AppData', 'Roaming'), 'orca')
-  }
-  return join(process.env.XDG_CONFIG_HOME || join(homedir(), '.config'), 'orca')
+  const userDataPath = getUnvalidatedOrcaUserDataPath()
+  getExperimentCodexHomePaths()
+  return userDataPath
 }
 
-// Why: each managed home (the shared runtime mirror, or a per-account
-// self-contained CODEX_HOME that the caller has already created) links the same
-// system resources with its own ownership markers, so a per-account launch home
-// is complete without ever symlinking into or mutating the user's real ~/.codex.
 export function syncSystemCodexResourcesIntoManagedHome(managedHomePath?: string): void {
   const targetHome = managedHomePath ?? getOrcaManagedCodexHomePath()
   const systemHomePath = getSystemCodexHomePath()
+  assertExperimentCodexHomeTree(systemHomePath)
+  assertExperimentCodexHomeTree(targetHome)
   for (const entryName of CODEX_SYSTEM_RESOURCE_ENTRIES) {
-    linkSystemCodexResource(systemHomePath, targetHome, entryName)
+    linkSystemCodexResource(systemHomePath, targetHome, entryName, {
+      preferCopy: isExperimentCodexSystemHomeEnabled()
+    })
   }
 }
 
@@ -86,10 +94,6 @@ export function syncCodexGlobalInstructionsIntoManagedHome({
   managedHomePath: string
 }): void {
   mkdirSync(managedHomePath, { recursive: true })
-  // Why: this only runs for WSL runtime homes, whose system + managed homes are
-  // both \\wsl.localhost UNC paths. A host-side symlink there stores a Windows
-  // UNC target the distro cannot resolve, so copy the file like the config
-  // mirror does across the same boundary.
   linkSystemCodexResource(systemHomePath, managedHomePath, CODEX_GLOBAL_INSTRUCTIONS_ENTRY, {
     preferCopy: true
   })
@@ -103,11 +107,15 @@ function linkSystemCodexResource(
 ): void {
   const sourcePath = join(systemHomePath, entryName)
   const targetPath = join(managedHomePath, entryName)
-  if (!existsSync(sourcePath)) {
+  const sourceObservation = observeResolvedPathEntry(sourcePath)
+  if (sourceObservation.kind === 'indeterminate') {
+    return
+  }
+  if (sourceObservation.kind === 'absent') {
     removeCopiedResourceIfOwned(targetPath, managedHomePath, entryName, sourcePath)
     return
   }
-  if (entryName === CODEX_GLOBAL_INSTRUCTIONS_ENTRY && !systemResourceIsRegularFile(sourcePath)) {
+  if (entryName === CODEX_GLOBAL_INSTRUCTIONS_ENTRY && !sourceObservation.value.isFile()) {
     removeCopiedResourceIfOwned(targetPath, managedHomePath, entryName, sourcePath)
     console.warn('[codex-home] Ignoring non-file system Codex resource:', entryName)
     return
@@ -119,23 +127,22 @@ function linkSystemCodexResource(
       return
     }
   }
-  const shouldRefreshFallbackCopy = targetIsOwnedFallbackCopy(
-    targetPath,
-    managedHomePath,
-    entryName,
-    sourcePath
-  )
-  if (pathEntryExists(targetPath) && !shouldRefreshFallbackCopy) {
+  const targetObservation = observe(() => lstatSync(targetPath))
+  if (targetObservation.kind === 'indeterminate') {
+    return
+  }
+  const shouldRefreshFallbackCopy =
+    targetObservation.kind === 'present' &&
+    targetIsOwnedFallbackCopy(targetPath, managedHomePath, entryName, sourcePath)
+  if (targetObservation.kind === 'present' && !shouldRefreshFallbackCopy) {
     return
   }
   if (shouldRefreshFallbackCopy) {
-    // Why: WSL launch preparation runs before every Codex start. Avoid
-    // rewriting an unchanged file across the UNC boundary on every launch.
-    if (
-      entryName === CODEX_GLOBAL_INSTRUCTIONS_ENTRY &&
-      copiedFileContentsMatch(sourcePath, targetPath)
-    ) {
-      return
+    if (entryName === CODEX_GLOBAL_INSTRUCTIONS_ENTRY) {
+      const contentsMatch = copiedFileContentsMatch(sourcePath, targetPath)
+      if (contentsMatch === 'match' || contentsMatch === 'indeterminate') {
+        return
+      }
     }
     rmSync(targetPath, { recursive: true, force: true })
   }
@@ -154,9 +161,6 @@ function linkSystemCodexResource(
     )
     clearCopiedResourceMarker(managedHomePath, entryName)
   } catch (error) {
-    // Why: Windows can reject file symlinks outside developer mode. Copy is
-    // a fallback for launch-time resources; mark ownership so later syncs can
-    // refresh the copy without touching user-created runtime resources.
     copySystemCodexResourceAsOwnedFallback(
       sourcePath,
       targetPath,
@@ -205,33 +209,19 @@ function copySystemCodexResourceAsOwnedFallback(
   }
 }
 
-function systemResourceIsRegularFile(sourcePath: string): boolean {
-  try {
-    return statSync(sourcePath).isFile()
-  } catch {
-    return false
-  }
-}
-
-function pathEntryExists(entryPath: string): boolean {
-  try {
-    lstatSync(entryPath)
-    return true
-  } catch {
-    return false
-  }
-}
-
-function copiedFileContentsMatch(sourcePath: string, targetPath: string): boolean {
+function copiedFileContentsMatch(
+  sourcePath: string,
+  targetPath: string
+): 'match' | 'different' | 'indeterminate' {
   try {
     // Why: reading a FIFO or device synchronously can block Codex launch.
     // Follow source symlinks, but only compare two regular files.
     if (!statSync(sourcePath).isFile() || !lstatSync(targetPath).isFile()) {
-      return false
+      return 'different'
     }
-    return readFileSync(sourcePath).equals(readFileSync(targetPath))
+    return readFileSync(sourcePath).equals(readFileSync(targetPath)) ? 'match' : 'different'
   } catch {
-    return false
+    return 'indeterminate'
   }
 }
 

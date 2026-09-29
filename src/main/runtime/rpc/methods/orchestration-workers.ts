@@ -1,4 +1,4 @@
-import type { TuiAgent } from '../../../../shared/types'
+import type { TuiAgent } from '../../../../shared/tui-agent'
 import { buildDispatchPreamble } from '../../orchestration/preamble'
 import { OrchestrationError } from '../../orchestration/orchestration-error'
 import { defineMethod, type RpcMethod } from '../core'
@@ -20,12 +20,16 @@ import {
 } from './orchestration-worker-setup-gate'
 import { failWorkerStartWithReceipt } from './orchestration-worker-start-receipt'
 import { prepareLocalWorkerStart } from './orchestration-worker-start-validation'
+import { prepareKernelWorkerStart, requireKernelLocalRepo } from './orchestration-kernel-admission'
 
 export const ORCHESTRATION_WORKER_START_METHODS: RpcMethod[] = [
   defineMethod({
     name: 'orchestration.workerStart',
     params: WorkerStartParams,
-    handler: async (params, { runtime, orchestrationMutation }) => {
+    handler: async (
+      params,
+      { runtime, orchestrationMutation, orchestrationCompatibilityEvidence }
+    ) => {
       const db = runtime.getOrchestrationDb()
       const coordinatorPane = runtime.getTerminalPaneKey(params.from)
       const run = coordinatorPane ? db.getCurrentRunForPane(coordinatorPane) : undefined
@@ -43,6 +47,14 @@ export const ORCHESTRATION_WORKER_START_METHODS: RpcMethod[] = [
         )
       }
 
+      const kernelStart = prepareKernelWorkerStart(
+        runtime,
+        run.id,
+        params,
+        task.spec,
+        orchestrationCompatibilityEvidence
+      )
+      const kernelRework = await kernelStart.recheckRework()
       if (params.on) {
         return startFederatedWorker({
           params,
@@ -60,21 +72,21 @@ export const ORCHESTRATION_WORKER_START_METHODS: RpcMethod[] = [
       const { agent, launch } = prepareLocalWorkerStart({ params, createsWorktree, runtime })
 
       const coordinatorTerminal = await runtime.showTerminal(params.from)
-      const coordinatorWorktree = await runtime.showManagedWorktree(
-        `id:${coordinatorTerminal.worktreeId}`
-      )
-      if (createsWorktree) {
+      const creationWorktree = createsWorktree
+        ? await runtime.showManagedWorktree(`id:${coordinatorTerminal.worktreeId}`)
+        : undefined
+      if (creationWorktree) {
         await assertOrchestrationWorktreeCreationSupported({
           runtime,
-          repoSelector: params.repo ?? coordinatorWorktree.repoId,
+          repoSelector: params.repo ?? creationWorktree.repoId,
           existingPlacement: 'current or an exact existing folder workspace'
         })
       }
-      let resolvedWorktree = createsWorktree
+      let resolvedWorktree = creationWorktree
         ? undefined
         : requestedWorktree === 'current'
-          ? coordinatorWorktree
-          : await runtime.showManagedWorktree(requestedWorktree)
+          ? await runtime.showManagedTerminalWorkspace(`id:${coordinatorTerminal.worktreeId}`)
+          : await runtime.showManagedTerminalWorkspace(requestedWorktree)
       let explicitTerminal
       if (params.terminal) {
         explicitTerminal = await runtime.showTerminal(params.terminal)
@@ -92,27 +104,41 @@ export const ORCHESTRATION_WORKER_START_METHODS: RpcMethod[] = [
         }
       }
 
-      const startOptions = {
-        worktree: requestedWorktree,
-        resolvedWorktreeId: resolvedWorktree?.id ?? null,
-        name: params.name ?? null,
-        repo: params.repo ?? (createsWorktree ? coordinatorWorktree.repoId : null),
-        baseBranch: params.baseBranch ?? null,
-        terminal: params.terminal ?? null,
-        agent: agent ?? null,
-        launch: launch.receipt,
-        timeoutMs: params.timeoutMs ?? 60_000,
-        setup: createsWorktree ? (params.setup ?? 'run') : 'not_applicable',
-        setupSource: createsWorktree
-          ? params.setup
-            ? 'explicit_request'
-            : 'orchestration_default'
-          : 'existing_worktree'
+      if (kernelStart.snapshot !== null) {
+        await requireKernelLocalRepo(runtime, run.id, kernelStart.snapshot, params)
       }
+      await kernelStart.recheckBase()
+      kernelStart.recheckAdmission()
+      await kernelStart.recheckRework()
       const started = db.createStartingWorkerDispatch({
         taskId: task.id,
+        expectedKernelConfig: kernelStart.snapshot,
+        expectedKernelGeneration: kernelStart.runGeneration,
+        expectedKernelOwner: kernelStart.runOwner,
         retryOf: params.retryOf,
-        startOptions,
+        startOptions: {
+          ...(kernelStart.base?.dependency ? { kernelBase: kernelStart.base } : {}),
+          ...(kernelRework ? { kernelRework } : {}),
+          worktree: requestedWorktree,
+          resolvedWorktreeId: resolvedWorktree?.id ?? null,
+          name: params.name ?? null,
+          repo: kernelRework
+            ? `id:${kernelRework.repoId}`
+            : (params.repo ?? creationWorktree?.repoId ?? null),
+          baseBranch: kernelRework
+            ? (kernelStart.base?.baseCommit ?? null)
+            : (params.baseBranch ?? null),
+          terminal: params.terminal ?? null,
+          agent: agent ?? null,
+          launch: launch.receipt,
+          timeoutMs: params.timeoutMs ?? 60_000,
+          setup: createsWorktree ? (params.setup ?? 'run') : 'not_applicable',
+          setupSource: createsWorktree
+            ? params.setup
+              ? 'explicit_request'
+              : 'orchestration_default'
+            : 'existing_worktree'
+        },
         runtimeEpoch: runtime.getRuntimeId(),
         mutationReceipt: orchestrationMutation
       })
@@ -135,14 +161,14 @@ export const ORCHESTRATION_WORKER_START_METHODS: RpcMethod[] = [
         state: 'not_applicable'
       }
       try {
-        if (createsWorktree) {
+        if (creationWorktree) {
           failedStage = 'worktree_create'
           const created = await createWorkerWorktree({
             runtime,
             db,
             dispatchId: started.dispatch.id,
             requestedWorktree,
-            coordinatorWorktree,
+            coordinatorWorktree: creationWorktree,
             params,
             agent: agent as TuiAgent,
             launchPreferences: launch.preferences,
@@ -209,6 +235,7 @@ export const ORCHESTRATION_WORKER_START_METHODS: RpcMethod[] = [
               : `Agent did not become ready (${wait.status}).`
           )
         }
+        await kernelStart.recheckRework()
         const terminalAuthority = requireWorkerAuthority(runtime, terminalHandle)
         const capability = db.prepareStartingWorkerAuthority({
           dispatchId: started.dispatch.id,
@@ -224,13 +251,15 @@ export const ORCHESTRATION_WORKER_START_METHODS: RpcMethod[] = [
         const preamble = buildDispatchPreamble({
           taskId: task.id,
           dispatchId: started.dispatch.id,
-          taskSpec: task.spec,
+          taskSpec: kernelStart.taskSpec,
           coordinatorHandle: params.from,
           workerHandle: terminalHandle,
           dispatchCapability: capability,
           devMode: params.devMode,
           cliCommand: runtime.getTerminalOrchestrationCliCommand(terminalHandle)
         })
+        const recheckDelivery = await kernelStart.recheckBase(resolvedWorktree.id)
+        recheckDelivery()
         await runtime.sendTerminalAgentPrompt(terminalHandle, preamble)
         effects.push({
           kind: 'dispatch_input',
@@ -250,6 +279,7 @@ export const ORCHESTRATION_WORKER_START_METHODS: RpcMethod[] = [
         return {
           runId: run.id,
           taskId: task.id,
+          ...(kernelStart.base?.dependency ? { kernelBase: kernelStart.base } : {}),
           dispatchId: started.dispatch.id,
           state: worker.state,
           stage: worker.stage,

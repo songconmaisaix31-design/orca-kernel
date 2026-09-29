@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { homedir, tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
@@ -170,6 +170,35 @@ describe('patchPackagedProcessPath', () => {
 })
 
 describe('configureDevUserDataPath', () => {
+  it.skipIf(process.platform !== 'win32')(
+    'keeps an approved experiment profile through Electron userData canonicalization',
+    async () => {
+      const { app } = await import('electron')
+      const { configureDevUserDataPath, configureOrcaUserDataPathEnv } =
+        await import('./configure-process')
+      const labRoot = join(process.env.LOCALAPPDATA!, 'OrcaKernelLab')
+      const experimentRoot = mkdtempSync(join(labRoot, 'configure-experiment-test-'))
+      const systemHome = join(experimentRoot, 'system-home')
+      const profile = join(experimentRoot, 'profile')
+      const originalSystemHome = process.env.ORCA_EXPERIMENT_CODEX_SYSTEM_HOME
+      const originalProfile = process.env.ORCA_USER_DATA_PATH
+      mkdirSync(systemHome, { recursive: true })
+      mkdirSync(profile, { recursive: true })
+      try {
+        process.env.ORCA_EXPERIMENT_CODEX_SYSTEM_HOME = systemHome
+        process.env.ORCA_USER_DATA_PATH = profile
+        configureDevUserDataPath(false)
+        configureOrcaUserDataPathEnv()
+        expect(app.getPath('userData')).toBe(profile)
+        expect(process.env.ORCA_USER_DATA_PATH).toBe(profile)
+      } finally {
+        restoreEnv('ORCA_EXPERIMENT_CODEX_SYSTEM_HOME', originalSystemHome)
+        restoreEnv('ORCA_USER_DATA_PATH', originalProfile)
+        rmSync(experimentRoot, { recursive: true, force: true })
+      }
+    }
+  )
+
   it('forces Electron home into the disposable E2E profile', async () => {
     const { app } = await import('electron')
     const { configureDevUserDataPath } = await import('./configure-process')
@@ -393,6 +422,46 @@ describe('configureElectronNetworkCompatibility', () => {
     configureElectronNetworkCompatibility({ env: {}, userDataPath })
 
     expect(app.commandLine.appendSwitch).toHaveBeenCalledWith('disable-http2')
+  })
+})
+
+describe('disableUnsupportedChromiumFeatures', () => {
+  it('disables FedCM before Chromium sessions are created', async () => {
+    const { app } = await import('electron')
+    const { disableUnsupportedChromiumFeatures } = await import('./configure-process')
+
+    vi.mocked(app.commandLine.appendSwitch).mockClear()
+    disableUnsupportedChromiumFeatures()
+
+    expect(app.commandLine.appendSwitch).toHaveBeenCalledWith('disable-features', 'FedCm')
+  })
+
+  it('preserves existing disabled Chromium features', async () => {
+    const { app } = await import('electron')
+    const { disableUnsupportedChromiumFeatures } = await import('./configure-process')
+
+    vi.mocked(app.commandLine.getSwitchValue).mockReturnValueOnce('ExistingFeature')
+    vi.mocked(app.commandLine.appendSwitch).mockClear()
+    disableUnsupportedChromiumFeatures()
+
+    expect(app.commandLine.appendSwitch).toHaveBeenCalledWith(
+      'disable-features',
+      'FedCm,ExistingFeature'
+    )
+  })
+
+  it('does not duplicate FedCM when disable-features already includes it', async () => {
+    const { app } = await import('electron')
+    const { disableUnsupportedChromiumFeatures } = await import('./configure-process')
+
+    vi.mocked(app.commandLine.getSwitchValue).mockReturnValueOnce('FedCm,ExistingFeature')
+    vi.mocked(app.commandLine.appendSwitch).mockClear()
+    disableUnsupportedChromiumFeatures()
+
+    expect(app.commandLine.appendSwitch).toHaveBeenCalledWith(
+      'disable-features',
+      'FedCm,ExistingFeature'
+    )
   })
 })
 

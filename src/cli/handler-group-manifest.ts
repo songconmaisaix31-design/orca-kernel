@@ -103,6 +103,8 @@ export const HANDLER_GROUPS: readonly HandlerGroup[] = [
   {
     name: 'orchestration',
     keys: [
+      'orchestration kernel-approve-acceptance',
+      'orchestration kernel-accept',
       'orchestration run-create',
       'orchestration run-use',
       'orchestration run-current',
@@ -179,7 +181,7 @@ export const HANDLER_GROUPS: readonly HandlerGroup[] = [
   },
   {
     name: 'agent-hooks',
-    keys: ['agent hooks status', 'agent hooks off', 'agent hooks on'],
+    keys: ['agent hooks prepare-codex', 'agent hooks status', 'agent hooks off', 'agent hooks on'],
     load: async () => (await import('./handlers/agent-hooks.js')).AGENT_HOOK_HANDLERS
   },
   {
@@ -194,7 +196,13 @@ export const HANDLER_GROUPS: readonly HandlerGroup[] = [
   },
   {
     name: 'environment',
-    keys: ['environment add', 'environment list', 'environment show', 'environment rm'],
+    keys: [
+      'host list',
+      'environment add',
+      'environment list',
+      'environment show',
+      'environment rm'
+    ],
     load: async () => (await import('./handlers/environment.js')).ENVIRONMENT_HANDLERS
   },
   {
@@ -234,6 +242,11 @@ export const HANDLER_GROUPS: readonly HandlerGroup[] = [
     name: 'vm',
     keys: ['vm recipe doctor'],
     load: async () => (await import('./handlers/vm.js')).VM_HANDLERS
+  },
+  {
+    name: 'skill-sharing',
+    keys: ['skills installed', 'skills share'],
+    load: async () => (await import('./handlers/skill-sharing.js')).SKILL_SHARING_HANDLERS
   },
   {
     name: 'skills',

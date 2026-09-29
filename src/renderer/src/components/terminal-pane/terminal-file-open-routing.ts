@@ -29,8 +29,9 @@ function openHtmlFileInBrowser(filePath: string, worktreeId: string): void {
   const store = useAppStore.getState()
   if (worktreeId) {
     // Why: following an HTML file link changes which worktree is foregrounded,
-    // so it must record a history visit before opening the browser tab.
-    activateAndRevealWorktree(worktreeId)
+    // so it must record a history visit before opening the browser tab — but the
+    // browser tab is the surface, so an emptied workspace must not gain a shell.
+    activateAndRevealWorktree(worktreeId, { providesInitialSurface: true })
   }
   const fileUrl = absolutePathToFileUri(filePath)
   const title = filePath.split(/[/\\]/).pop() ?? filePath
@@ -58,16 +59,22 @@ export function mapTerminalFilePath(
   worktreePath: string,
   wslDistro?: string | null
 ): string {
-  const distro = wslDistro?.trim() || parseWslUncPath(worktreePath)?.distro
-  if (!distro || !filePath.startsWith('/') || filePath.startsWith('//')) {
+  const distro =
+    wslDistro === null ? null : wslDistro?.trim() || parseWslUncPath(worktreePath)?.distro
+  if (!distro || !filePath.startsWith('/')) {
+    return filePath
+  }
+  // Why: only a proven local WSL pane may reinterpret this POSIX-looking path; SSH/runtime paths stay literal.
+  const alreadyUnc = parseWslUncPath(filePath)
+  if (alreadyUnc) {
+    return toWindowsWslPath(alreadyUnc.linuxPath, alreadyUnc.distro)
+  }
+  if (filePath.startsWith('//')) {
     return filePath
   }
   // Why: /mnt/<drive> is a Windows drive mounted into WSL — reach it directly
   // instead of routing a native file back through the 9P share.
-  if (/^\/mnt\/[a-z](\/|$)/.test(filePath)) {
-    return toWindowsWslPath(filePath, distro)
-  }
-  return `//wsl.localhost/${distro}${filePath}`
+  return toWindowsWslPath(filePath, distro)
 }
 
 // Why: remote-runtime panes print the remote host's POSIX paths; the local WSL
@@ -75,8 +82,8 @@ export function mapTerminalFilePath(
 export function terminalLinkWslDistro(
   wslDistro: string | null | undefined,
   runtimeEnvironmentId: string | null | undefined
-): string | null {
-  return runtimeEnvironmentId ? null : (wslDistro ?? null)
+): string | null | undefined {
+  return runtimeEnvironmentId ? null : wslDistro
 }
 
 export function shouldOpenTerminalFileWithSystemDefault(
@@ -202,10 +209,9 @@ export function openDetectedFilePath(
 
     const store = useAppStore.getState()
     if (worktreeId) {
-      // Why: terminal file links can jump across worktrees. Reusing the shared
-      // activation path keeps those jumps in the same history stack as sidebar
-      // and palette navigation before the editor opens the destination file.
-      activateAndRevealWorktree(worktreeId)
+      // Why: cross-worktree file links share the activation history stack with sidebar and
+      // palette navigation, but the editor file is the surface — don't seed a shell.
+      activateAndRevealWorktree(worktreeId, { providesInitialSurface: true })
     }
 
     const language = detectLanguage(mappedFilePath)

@@ -1,3 +1,4 @@
+import type { TerminalExitCause } from '../../../shared/terminal-exit-cause'
 export const MESSAGE_TYPES = [
   'status',
   'dispatch',
@@ -41,6 +42,8 @@ export type CoordinatorStatus = 'idle' | 'running' | 'completed' | 'failed'
 
 export type RunRow = {
   id: string
+  kernel_config?: string | null
+  kernel_default_max_attempts?: number | null
   objective: string
   home_database: string
   coordinator_handle: string | null
@@ -182,6 +185,7 @@ export type FederatedDispatchRow = {
   remote_worktree_id: string | null
   remote_terminal_handle: string | null
   to_home_imported_sequence: number
+  to_home_acknowledged_sequence: number
   created_at: string
   updated_at: string
 }
@@ -255,6 +259,7 @@ export type TaskRow = {
   status: TaskStatus
   deps: string
   result: string | null
+  kernel_acceptance?: string | null
   created_at: string
   completed_at: string | null
 }
@@ -273,6 +278,9 @@ export type DispatchContextRow = {
   status: DispatchStatus
   failure_count: number
   last_failure: string | null
+  /** Why the dispatch ended, when Orca could establish it — `operator_close`,
+   *  `signaled`, `exited`, `unknown`. Null on rows written before STA-4603. */
+  termination_reason: TerminalExitCause['kind'] | null
   dispatched_at: string | null
   completed_at: string | null
   created_at: string
