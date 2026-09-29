@@ -111,6 +111,7 @@ import {
 } from '../../shared/constants'
 import { advertisedUrlWatcher } from '../ports/advertised-url-watcher'
 import { makePaneKey } from '../../shared/stable-pane-id'
+import { AgentHookServer } from '../agent-hooks/server'
 import {
   SETUP_AGENT_SEQUENCE_STARTUP_COMMAND_ENV,
   SETUP_AGENT_SEQUENCE_STARTUP_SCRIPT_ENV
@@ -13337,6 +13338,124 @@ describe('OrcaRuntimeService', () => {
       paneKey,
       processIncarnation: `persisted-pty:${incarnationId}`
     })
+  })
+
+  it('attests a restored exact terminal from a prior dev hook namespace', async () => {
+    const paneKey = makePaneKey('host-tab', HEADLESS_LEAF_ID)
+    const wrongPaneKey = makePaneKey('wrong-tab', '22222222-2222-4222-8222-222222222222')
+    const incarnationId = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa'
+    const replacementIncarnationId = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb'
+    const launchToken = 'retained-dev-runtime-launch'
+    const launchTokenHash = createHash('sha256').update(launchToken).digest('hex')
+    const userDataPath = await mkdtemp(join(tmpdir(), 'orca-runtime-hook-authority-'))
+    const namespacePath = join(userDataPath, 'agent-hooks', 'com.stablyai.orca.dev.1111111111')
+    await mkdir(namespacePath, { recursive: true })
+    await writeFile(
+      join(namespacePath, 'last-status.json'),
+      JSON.stringify({
+        version: 2,
+        entries: {},
+        authorityCommitments: {
+          [paneKey]: {
+            paneKey,
+            launchTokenHash,
+            connectionId: null,
+            tabId: 'host-tab',
+            worktreeId: TEST_WORKTREE_ID,
+            observedAt: Date.now()
+          }
+        }
+      })
+    )
+    const hookServer = new AgentHookServer()
+    await hookServer.start({ env: 'production', userDataPath })
+    onTestFinished(async () => {
+      hookServer.stop()
+      await rm(userDataPath, { recursive: true, force: true })
+    })
+    const session = makeWorkspaceSessionWithHeadlessTerminal({
+      terminalPtyIncarnationsByPaneKey: { [paneKey]: incarnationId }
+    })
+    const { runtimeStore } = makeRuntimeStoreWithWorkspaceSession(session)
+    const runtime = new OrcaRuntimeService(runtimeStore as never, undefined, {
+      canRecoverPersistentLocalPtys: () => true,
+      attestAgentHookCompatibilityAuthority: (candidate) =>
+        hookServer.attestCompatibilityAuthority(candidate)
+    })
+    const controllerHandle = 'term_retained_dev_coordinator'
+    const listProcesses = vi.fn(async () => [
+      {
+        id: 'persisted-pty',
+        incarnationId,
+        terminalHandle: controllerHandle,
+        title: 'Coordinator',
+        cwd: TEST_WORKTREE_PATH,
+        worktreeId: TEST_WORKTREE_ID,
+        wslDistro: null
+      }
+    ])
+    runtime.setPtyController({
+      write: () => true,
+      kill: () => true,
+      getForegroundProcess: async () => null,
+      listProcesses
+    })
+    runtime.attachWindow(TEST_WINDOW_ID)
+    runtime.syncWindowGraph(TEST_WINDOW_ID, {
+      tabs: [
+        {
+          tabId: 'host-tab',
+          worktreeId: TEST_WORKTREE_ID,
+          title: 'Coordinator',
+          activeLeafId: HEADLESS_LEAF_ID,
+          layout: null
+        }
+      ],
+      leaves: [
+        {
+          tabId: 'host-tab',
+          worktreeId: TEST_WORKTREE_ID,
+          leafId: HEADLESS_LEAF_ID,
+          paneRuntimeId: 1,
+          ptyId: 'persisted-pty'
+        }
+      ]
+    })
+    const evidence = { terminalHandle: controllerHandle, paneKey, launchToken }
+
+    await expect(runtime.refreshRestoredOrchestrationAuthority()).resolves.toBeUndefined()
+    expect(runtime.verifyOrchestrationCompatibilityCaller(evidence)).toMatchObject({
+      terminalHandle: controllerHandle,
+      paneKey,
+      processIncarnation: `persisted-pty:${incarnationId}`,
+      launchTokenHash
+    })
+    expect(
+      runtime.verifyOrchestrationCompatibilityCaller({ ...evidence, launchToken: 'bogus' })
+    ).toBeNull()
+    expect(
+      runtime.verifyOrchestrationCompatibilityCaller({ ...evidence, paneKey: wrongPaneKey })
+    ).toBeNull()
+    expect(
+      runtime.verifyOrchestrationCompatibilityCaller({
+        ...evidence,
+        host: { kind: 'wsl', hostId: 'local', distro: 'Ubuntu' }
+      })
+    ).toBeNull()
+
+    listProcesses.mockResolvedValue([
+      {
+        id: 'persisted-pty',
+        incarnationId: replacementIncarnationId,
+        terminalHandle: controllerHandle,
+        title: 'Replacement',
+        cwd: TEST_WORKTREE_PATH,
+        worktreeId: TEST_WORKTREE_ID,
+        wslDistro: null
+      }
+    ])
+    await expect(runtime.refreshRestoredOrchestrationAuthority()).resolves.toBeUndefined()
+    expect(runtime.verifyOrchestrationCompatibilityCaller(evidence)).toBeNull()
   })
 
   it('forgets synthetic handles when disconnected PTY records are pruned', () => {
