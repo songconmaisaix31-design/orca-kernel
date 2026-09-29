@@ -1,4 +1,3 @@
-import { readFileSync } from 'node:fs'
 import process from 'node:process'
 import { pathToFileURL } from 'node:url'
 
@@ -36,6 +35,11 @@ export function shouldRunPrChecks(changedFiles) {
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
-  const files = readFileSync(0, 'utf8').split('\n').filter(Boolean)
+  process.stdin.setEncoding('utf8')
+  let input = ''
+  for await (const chunk of process.stdin) {
+    input += chunk
+  }
+  const files = input.split('\n').filter(Boolean)
   process.stdout.write(shouldRunPrChecks(files) ? 'true\n' : 'false\n')
 }

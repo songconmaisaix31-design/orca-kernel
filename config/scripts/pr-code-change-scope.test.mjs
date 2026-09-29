@@ -1,4 +1,5 @@
 import { readFileSync } from 'node:fs'
+import { spawn } from 'node:child_process'
 import { join, resolve } from 'node:path'
 import { describe, expect, it } from 'vitest'
 import { parse } from 'yaml'
@@ -22,6 +23,23 @@ const expensiveJobs = [
 ]
 
 describe('docs-only path classification', () => {
+  it('waits for a large chunked stdin before classifying the final source path', async () => {
+    const child = spawn(process.execPath, [join(projectDir, 'config/scripts/pr-code-change-scope.mjs')])
+    let output = ''
+    child.stdout.setEncoding('utf8')
+    child.stdout.on('data', (chunk) => { output += chunk })
+    child.stdin.on('error', () => {})
+    const closed = new Promise((resolve, reject) => {
+      child.once('error', reject)
+      child.once('close', resolve)
+    })
+    child.stdin.write('docs/example.md\n'.repeat(20000))
+    await new Promise((resolve) => setTimeout(resolve, 20))
+    child.stdin.end('src/main/index.ts\n')
+    expect(await closed).toBe(0)
+    expect(output).toBe('true\n')
+  })
+
   it('treats the WeChat README PR files as docs-only', () => {
     expect(
       shouldRunPrChecks([
