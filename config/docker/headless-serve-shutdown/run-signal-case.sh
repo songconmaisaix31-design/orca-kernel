@@ -7,6 +7,7 @@ signal_target_kind=${ORCA_SIGNAL_TARGET:-app}
 entrypoint_kind=${ORCA_TEST_ENTRYPOINT:-app}
 int_delivery=${ORCA_INT_DELIVERY:-foreground-process-group}
 startup_timeout_seconds=${ORCA_STARTUP_TIMEOUT_SECONDS:-90}
+require_sandbox=${ORCA_REQUIRE_SANDBOX:-0}
 
 if ((EUID == 0)); then
   exec runuser --user orca --preserve-environment -- "$0" "$@"
@@ -16,6 +17,11 @@ case "$signal_name" in
   INT|TERM) ;;
   *) echo "unsupported signal: $signal_name" >&2; exit 64 ;;
 esac
+
+if [[ "$require_sandbox" == 1 && "$entrypoint_kind" != app ]]; then
+  echo "FAIL: ORCA_REQUIRE_SANDBOX requires the extracted orca-ide entrypoint" >&2
+  exit 64
+fi
 
 state_dir=$(mktemp -d "/tmp/orca-shutdown-${signal_name}.XXXXXX")
 stdout_log="$state_dir/stdout.log"
@@ -40,7 +46,13 @@ mkdir -p "$HOME" "$XDG_CONFIG_HOME" "$XDG_CACHE_HOME" "$XDG_RUNTIME_DIR"
 chmod 700 "$XDG_RUNTIME_DIR"
 
 case "$entrypoint_kind" in
-  app) entrypoint=("$app_root/AppRun" --no-sandbox) ;;
+  app)
+    if [[ "$require_sandbox" == 1 ]]; then
+      entrypoint=("$app_root/orca-ide")
+    else
+      entrypoint=("$app_root/AppRun" --no-sandbox)
+    fi
+    ;;
   launcher)
     export ELECTRON_DISABLE_SANDBOX=1
     entrypoint=("$app_root/resources/bin/orca-ide")
@@ -48,7 +60,17 @@ case "$entrypoint_kind" in
   *) echo "unsupported entrypoint: $entrypoint_kind" >&2; exit 64 ;;
 esac
 
-setsid env -u DISPLAY "${entrypoint[@]}" serve --port 0 --pairing-address 127.0.0.1 --json \
+if [[ "$require_sandbox" == 1 && ! -x "$app_root/orca-ide" ]]; then
+  echo "FAIL: extracted orca-ide is not executable" >&2
+  exit 64
+fi
+
+launch_env=(env -u DISPLAY)
+if [[ "$require_sandbox" == 1 ]]; then
+  launch_env+=(-u ELECTRON_DISABLE_SANDBOX -u ORCA_APPIMAGE_NO_SANDBOX)
+fi
+
+setsid "${launch_env[@]}" "${entrypoint[@]}" serve --port 0 --pairing-address 127.0.0.1 --json \
   >"$stdout_log" 2>"$stderr_log" &
 app_pid=$!
 app_start_ticks=$(awk '{print $22}' "/proc/$app_pid/stat")
@@ -102,9 +124,38 @@ if [[ -z "$xvfb_pids" ]]; then
   exit 1
 fi
 
+find_serving_electron_pid() {
+  local pid cmdline
+  for pid in "$app_pid" "${tree_pids[@]}"; do
+    [[ -r "/proc/$pid/cmdline" ]] || continue
+    cmdline=$(tr '\0' ' ' <"/proc/$pid/cmdline")
+    if [[ "$cmdline" == *"/orca-ide"* ]] \
+      && [[ " $cmdline " == *" --serve "* || " $cmdline " == *" serve "* ]]; then
+      echo "$pid"
+      return 0
+    fi
+  done
+  return 1
+}
+
+if [[ "$require_sandbox" == 1 ]]; then
+  electron_pid=$(find_serving_electron_pid || true)
+  [[ -n "$electron_pid" ]] || { echo "FAIL: ORCA_REQUIRE_SANDBOX found no serving Electron process" >&2; exit 1; }
+  electron_cmdline=$(tr '\0' ' ' <"/proc/$electron_pid/cmdline")
+  electron_environment=$(tr '\0' '\n' <"/proc/$electron_pid/environ" 2>/dev/null || true)
+  if [[ "$electron_cmdline" == *"--no-sandbox"* ]] \
+    || grep -Eq '^(ELECTRON_DISABLE_SANDBOX|ORCA_APPIMAGE_NO_SANDBOX)=1$' <<<"$electron_environment"; then
+    echo "FAIL: ORCA_REQUIRE_SANDBOX observed disabled Electron sandbox" >&2
+    exit 1
+  fi
+  sandbox_verified=true
+else
+  sandbox_verified=false
+fi
+
 signal_target_pid=$app_pid
 if [[ "$signal_target_kind" == serving-electron ]]; then
-  signal_target_pid=$(awk '/\/orca-ide .* --serve / {print $1; exit}' <<<"$tree_snapshot")
+  signal_target_pid=$(find_serving_electron_pid || true)
   [[ -n "$signal_target_pid" ]] || { echo "FAIL: serving Electron process not found" >&2; exit 1; }
 elif [[ "$signal_target_kind" != app ]]; then
   echo "unsupported signal target: $signal_target_kind" >&2
@@ -175,13 +226,16 @@ jq -nc \
   --arg treeBefore "$tree_snapshot" \
   --argjson waitStatus "$wait_status" \
   --argjson fatalEvidence "$fatal_evidence" \
+  --argjson sandboxRequired "$( [[ "$require_sandbox" == 1 ]] && echo true || echo false )" \
+  --argjson sandboxVerified "$sandbox_verified" \
   --argjson canaryAlive "$canary_alive" \
   --arg survivors "${survivors[*]:-}" \
   --arg residue "$owned_residue" \
   --arg corePattern "$(cat /proc/sys/kernel/core_pattern)" \
-  '{signal:$signal,signalDelivery:$signalDelivery,entrypointKind:$entrypointKind,signalTargetKind:$signalTargetKind,appPid:$appPid,signalTargetPid:$signalTargetPid,boundEndpoint:$endpoint,listenerBefore:$listenerBefore,listenerAfter:$listenerAfter,xvfbPids:$xvfbPids,treeBefore:$treeBefore,waitStatus:$waitStatus,fatalEvidence:$fatalEvidence,canaryAlive:$canaryAlive,survivingTreePids:$survivors,ownedResidue:$residue,corePattern:$corePattern}'
+  '{signal:$signal,signalDelivery:$signalDelivery,entrypointKind:$entrypointKind,signalTargetKind:$signalTargetKind,appPid:$appPid,signalTargetPid:$signalTargetPid,boundEndpoint:$endpoint,listenerBefore:$listenerBefore,listenerAfter:$listenerAfter,xvfbPids:$xvfbPids,treeBefore:$treeBefore,waitStatus:$waitStatus,fatalEvidence:$fatalEvidence,sandboxRequired:$sandboxRequired,sandboxVerified:$sandboxVerified,canaryAlive:$canaryAlive,survivingTreePids:$survivors,ownedResidue:$residue,corePattern:$corePattern}'
 
 if ((wait_status != 0)) || [[ -n "$listener_after" ]] || [[ "$fatal_evidence" != false ]] \
+  || [[ "$require_sandbox" == 1 && "$sandbox_verified" != true ]] \
   || [[ "$canary_alive" != true ]] || ((${#survivors[@]})) || [[ -n "$owned_residue" ]]; then
   echo "--- stdout ---" >&2
   cat "$stdout_log" >&2
