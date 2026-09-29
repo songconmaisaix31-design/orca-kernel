@@ -2,7 +2,16 @@
 // Why: this main-process adapter keeps listener internals in shared/ (`src/shared/agent-hook-listener.ts`) so the relay can host the same pipeline without Electron; parsing that drifts back into this file stops applying to SSH panes.
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http'
 import { createHash, randomBytes, randomUUID } from 'node:crypto'
-import { chmodSync, mkdirSync, readFileSync, renameSync, unlinkSync, writeFileSync } from 'node:fs'
+import {
+  chmodSync,
+  mkdirSync,
+  readFileSync,
+  readdirSync,
+  renameSync,
+  unlinkSync,
+  writeFileSync
+} from 'node:fs'
+import type { Dirent } from 'node:fs'
 import { join } from 'node:path'
 
 import { track } from '../telemetry/client'
@@ -188,6 +197,7 @@ type RetiredPaneFence = {
 
 // Why: co-located with the endpoint file in userData/agent-hooks/ so hook-server cross-restart artifacts stay together.
 const LAST_STATUS_FILE_NAME = 'last-status.json'
+const LEGACY_DEV_ENDPOINT_NAMESPACE_RE = /^com\.stablyai\.orca\.dev\.[a-f0-9]{10}$/
 const ASSISTANT_MESSAGE_RETRY_ATTEMPTS = 5
 const ASSISTANT_MESSAGE_RETRY_MS = 50
 const CODEX_SUBAGENT_POLL_MS = 1_000
@@ -2421,6 +2431,9 @@ export class AgentHookServer {
     if (this.lastStatusFilePath) {
       this.hydrateLastStatusFromDisk()
     }
+    if (options?.userDataPath && !options.endpointNamespace && this.env === 'production') {
+      this.hydrateLegacyNamespaceAuthorityCommitments(options.userDataPath)
+    }
     this.captureHydratedAuthorityCommitments()
     const handleRequest = async (req: IncomingMessage, res: ServerResponse): Promise<void> => {
       if (req.method !== 'POST') {
@@ -3054,6 +3067,63 @@ export class AgentHookServer {
     } else if (hydrated > 0) {
       // Why: prime dedup from raw bytes (not re-serialized) only when hydration was lossless.
       this.lastWrittenJson = raw
+    }
+  }
+
+  private hydrateLegacyNamespaceAuthorityCommitments(userDataPath: string): void {
+    const authorityRoot = join(userDataPath, 'agent-hooks')
+    let namespaces: Dirent<string>[]
+    try {
+      namespaces = readdirSync(authorityRoot, { withFileTypes: true })
+    } catch {
+      return
+    }
+    const conflictedPaneKeys = new Set<string>()
+    const ttlCutoff = Date.now() - HYDRATE_MAX_AGE_MS
+    for (const namespace of namespaces.sort((left, right) => left.name.localeCompare(right.name))) {
+      if (
+        !namespace.isDirectory() ||
+        namespace.isSymbolicLink() ||
+        !LEGACY_DEV_ENDPOINT_NAMESPACE_RE.test(namespace.name)
+      ) {
+        continue
+      }
+      let parsed: unknown
+      try {
+        parsed = JSON.parse(
+          readFileSync(join(authorityRoot, namespace.name, LAST_STATUS_FILE_NAME), 'utf8')
+        )
+      } catch {
+        continue
+      }
+      if (typeof parsed !== 'object' || parsed === null) {
+        continue
+      }
+      const file = parsed as Partial<LastStatusFile>
+      if (
+        file.version !== LAST_STATUS_FILE_VERSION ||
+        typeof file.authorityCommitments !== 'object' ||
+        file.authorityCommitments === null
+      ) {
+        continue
+      }
+      for (const [paneKey, rawCommitment] of Object.entries(file.authorityCommitments)) {
+        const commitment = sanitizePersistedAuthorityCommitment(paneKey, rawCommitment)
+        if (!commitment || commitment.observedAt < ttlCutoff || conflictedPaneKeys.has(paneKey)) {
+          continue
+        }
+        const existing = this.persistedAuthorityCommitmentsByPaneKey.get(paneKey)
+        if (existing && !authorityCommitmentsMatch(existing, commitment)) {
+          this.persistedAuthorityCommitmentsByPaneKey.delete(paneKey)
+          this.hydratedLaunchTokenHashByPaneKey.delete(paneKey)
+          conflictedPaneKeys.add(paneKey)
+          continue
+        }
+        if (!existing || commitment.observedAt > existing.observedAt) {
+          this.persistedAuthorityCommitmentsByPaneKey.set(paneKey, commitment)
+          this.hydratedLaunchTokenHashByPaneKey.set(paneKey, commitment.launchTokenHash)
+        }
+      }
     }
   }
 
