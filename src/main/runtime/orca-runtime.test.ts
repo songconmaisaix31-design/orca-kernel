@@ -16785,6 +16785,37 @@ describe('OrcaRuntimeService', () => {
     })
   })
 
+  it('does not retain a dismissed Codex confirmation after its current compact prompt', async () => {
+    const runtime = new OrcaRuntimeService(store)
+    runtime.setPtyController({
+      spawn: vi.fn().mockResolvedValue({ id: 'pty-bg' }),
+      write: () => true,
+      kill: () => true,
+      getForegroundProcess: async () => 'codex'
+    })
+    const { handle } = await runtime.createTerminal(`path:${TEST_WORKTREE_PATH}`)
+    runtime.onPtyData(
+      'pty-bg',
+      [
+        'Would you like to grant these permissions?\n',
+        'Press enter to confirm or esc to cancel\n',
+        '› Ask Codex to do anything\n',
+        'gpt-5.6-terra medium\n',
+        `~${TEST_WORKTREE_PATH}\n`
+      ].join(''),
+      Date.now()
+    )
+
+    await expect(
+      runtime.waitForTerminal(handle, { condition: 'tui-idle', timeoutMs: 1_000 })
+    ).resolves.toMatchObject({
+      handle,
+      condition: 'tui-idle',
+      satisfied: true,
+      status: 'running'
+    })
+  })
+
   it('does not classify unrelated press-enter prompts as Codex blocked prompts', async () => {
     vi.useFakeTimers()
     try {
