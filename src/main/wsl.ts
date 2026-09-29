@@ -8,7 +8,9 @@ import {
   dropStaleWslAvailabilityFailure
 } from './wsl-availability'
 
-export { toWindowsWslPath } from '../shared/wsl-paths'
+// Why re-exported rather than defined here: the relay bundle needs the path
+// conversion without this module's distro-probing subprocess graph.
+export { toLinuxPath, toWindowsWslPath } from '../shared/wsl-paths'
 export {
   getCachedWslAvailability,
   hasCachedWslAvailability,
@@ -19,6 +21,33 @@ export {
 export type WslPathInfo = {
   distro: string
   linuxPath: string
+}
+
+const WSL_DIRECTORY_EXISTS_MARKER = '__ORCA_DIRECTORY_EXISTS__'
+const WSL_DIRECTORY_MISSING_MARKER = '__ORCA_DIRECTORY_MISSING__'
+
+function getWslDirectoryProbeArgs(info: WslPathInfo): string[] {
+  return [
+    '-d',
+    info.distro,
+    '--exec',
+    'sh',
+    '-c',
+    `if [ -d "$1" ]; then printf ${WSL_DIRECTORY_EXISTS_MARKER}; else printf ${WSL_DIRECTORY_MISSING_MARKER}; fi`,
+    'sh',
+    info.linuxPath
+  ]
+}
+
+function parseWslDirectoryProbeOutput(stdout: unknown): boolean | null {
+  const output = String(stdout)
+  if (output.includes(WSL_DIRECTORY_EXISTS_MARKER)) {
+    return true
+  }
+  if (output.includes(WSL_DIRECTORY_MISSING_MARKER)) {
+    return false
+  }
+  return null
 }
 
 /**
@@ -49,8 +78,8 @@ export function isWslPath(path: string): boolean {
  * Why: Win32 fs.statSync against the WSL 9P filesystem (\\wsl.localhost\...)
  * is unreliable for repos that live on the WSL side — it can report ENOENT for
  * directories that exist, which made opening a WSL worktree fail with
- * "Working directory ... does not exist". `wsl.exe -d <distro> test -d` asks
- * the distro directly, which is the authoritative answer. Returns null (rather
+ * "Working directory ... does not exist". The guest marker probe asks the
+ * distro directly, which is the authoritative answer. Returns null (rather
  * than false) when wsl.exe is unavailable or errors so callers can fall back to
  * the fs check instead of falsely rejecting a valid directory.
  */
@@ -63,45 +92,31 @@ export function wslUncDirectoryExists(uncPath: string): boolean | null {
     return null
   }
   try {
-    execFileSync('wsl.exe', ['-d', info.distro, '--', 'test', '-d', info.linuxPath], {
+    const stdout = execFileSync('wsl.exe', getWslDirectoryProbeArgs(info), {
       stdio: ['pipe', 'pipe', 'pipe'],
-      timeout: 5000
+      timeout: 5000,
+      encoding: 'utf8'
     })
-    return true
-  } catch (error) {
-    // A non-zero exit (directory missing) surfaces as an error with a numeric
-    // `status`; treat that as a definitive "does not exist". Any other failure
-    // (wsl.exe missing, distro not running, timeout) is inconclusive -> null.
-    if (typeof (error as { status?: unknown })?.status === 'number') {
-      return false
-    }
+    return parseWslDirectoryProbeOutput(stdout)
+  } catch {
     return null
   }
 }
 
-/**
- * Convert a Windows path to a Linux path for commands that will execute inside WSL.
- * Returns the path unchanged if it is already POSIX-style.
- *
- * Why: WSL hook/setup environments may need both the worktree UNC path
- * (\\wsl.localhost\...) and regular Windows install paths (C:\Users\...)
- * translated before passing them to bash. Leaving drive paths untouched
- * breaks scripts that read ORCA_ROOT_PATH or similar env vars inside WSL.
- */
-export function toLinuxPath(windowsPath: string): string {
-  const info = parseWslPath(windowsPath)
-  if (info) {
-    return info.linuxPath
+export function wslUncDirectoryExistsAsync(uncPath: string): Promise<boolean | null> {
+  if (process.platform !== 'win32') {
+    return Promise.resolve(null)
   }
-
-  const driveMatch = windowsPath.match(/^([A-Za-z]):[/\\](.*)$/)
-  if (!driveMatch) {
-    return windowsPath
+  const info = parseWslUncPath(uncPath)
+  if (!info) {
+    return Promise.resolve(null)
   }
-
-  const driveLetter = driveMatch[1].toLowerCase()
-  const rest = driveMatch[2].replace(/\\/g, '/')
-  return `/mnt/${driveLetter}/${rest}`
+  return new Promise((resolve) => {
+    execFile('wsl.exe', getWslDirectoryProbeArgs(info), { timeout: 5000 }, (_error, stdout) => {
+      // Why: wsl.exe uses numeric exits for both guest results and host failures; only the guest marker is authoritative.
+      resolve(parseWslDirectoryProbeOutput(stdout))
+    })
+  })
 }
 
 // ─── WSL home directory resolution ──────────────────────────────────
@@ -247,7 +262,7 @@ export function getWslHome(distro: string): string | null {
   }
 
   try {
-    const home = execFileSync('wsl.exe', ['-d', distro, '--', 'bash', '-c', 'echo $HOME'], {
+    const home = execFileSync('wsl.exe', ['-d', distro, '--exec', 'bash', '-c', 'echo $HOME'], {
       encoding: 'utf-8',
       stdio: ['pipe', 'pipe', 'pipe'],
       timeout: 5000
@@ -265,6 +280,12 @@ export function getWslHome(distro: string): string | null {
   }
 }
 
+/** Pure cache lookup — never probes. Lets callers that memoize a derived value avoid caching one
+ *  built from the unresolved fallback, since only the success path is cached above. */
+export function hasCachedWslHome(distro: string): boolean {
+  return wslHomeCache.has(distro)
+}
+
 export async function getWslHomeAsync(distro: string): Promise<string | null> {
   if (wslHomeCache.has(distro)) {
     return wslHomeCache.get(distro)!
@@ -272,7 +293,7 @@ export async function getWslHomeAsync(distro: string): Promise<string | null> {
 
   try {
     const home = (
-      await execFileUtf8('wsl.exe', ['-d', distro, '--', 'bash', '-c', 'echo $HOME'])
+      await execFileUtf8('wsl.exe', ['-d', distro, '--exec', 'bash', '-c', 'echo $HOME'])
     ).trim()
 
     if (!home || !home.startsWith('/')) {

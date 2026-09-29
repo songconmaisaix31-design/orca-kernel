@@ -4,9 +4,28 @@ import { ORCHESTRATION_WORKER_COMMAND_SPECS } from './orchestration-worker-specs
 
 export const ORCHESTRATION_COMMAND_SPECS: CommandSpec[] = [
   {
+    path: ['orchestration', 'kernel-approve-acceptance'],
+    summary: 'Approve trusted per-Task Node checks on a managed Run',
+    usage:
+      'orca orchestration kernel-approve-acceptance --run <id> --checks <json-file> [--from <handle>] [--json]',
+    allowedFlags: [...GLOBAL_FLAGS, 'run', 'checks', 'from'],
+    notes: [
+      'Explicitly approves executable Node source, not a sandbox. Plan.acceptance is never executed.'
+    ]
+  },
+  {
+    path: ['orchestration', 'kernel-accept'],
+    summary: 'Check and accept the fixed candidate of a successful supervised Dispatch',
+    usage:
+      'orca orchestration kernel-accept --run <id> --task <id> --dispatch <id> --candidate <full-sha> [--from <handle>] [--json]',
+    allowedFlags: [...GLOBAL_FLAGS, 'run', 'task', 'dispatch', 'candidate', 'from'],
+    notes: ['Native Git only. Accepted does not mean integrated.']
+  },
+  {
     path: ['orchestration', 'run-create'],
     summary: 'Create and bind a lightweight orchestration Run',
-    usage: 'orca orchestration run-create --objective <text> [--from <handle>] [--json]',
+    usage:
+      'orca orchestration run-create --objective <text> [--from <handle>] [--retry-request <id>] [--json]',
     allowedFlags: [...GLOBAL_FLAGS, 'objective', 'from', 'retry-request'],
     notes: [
       'A Run is a namespace and home inbox. It never schedules or places workers.',
@@ -17,10 +36,19 @@ export const ORCHESTRATION_COMMAND_SPECS: CommandSpec[] = [
     path: ['orchestration', 'run-use'],
     summary: 'Bind this coordinator terminal to an existing Run',
     usage:
-      'orca orchestration run-use --id <run_id> [--from <handle>] [--takeover-legacy] [--json]',
-    allowedFlags: [...GLOBAL_FLAGS, 'id', 'from', 'takeover-legacy', 'retry-request'],
+      'orca orchestration run-use --id <run_id> [--from <handle>] [--kernel-config <file> | --kernel-off] [--takeover-legacy] [--retry-request <id>] [--json]',
+    allowedFlags: [
+      ...GLOBAL_FLAGS,
+      'id',
+      'from',
+      'kernel-config',
+      'kernel-off',
+      'takeover-legacy',
+      'retry-request'
+    ],
     notes: [
-      '--takeover-legacy must run in the live coordinator agent terminal it binds; it preserves existing worker assignments.'
+      '--takeover-legacy must run in the live coordinator agent terminal it binds; it preserves existing worker assignments.',
+      '--kernel-config must be a JSON object with repoId and plan; use --kernel-off to explicitly disable it.'
     ]
   },
   {
@@ -45,7 +73,7 @@ export const ORCHESTRATION_COMMAND_SPECS: CommandSpec[] = [
     path: ['orchestration', 'send'],
     summary: 'Send an inter-agent message',
     usage:
-      'orca orchestration send --subject <text> [--to <run:id|dispatch:id|legacy_handle>] [--run <run_id>] [--from <handle>] [--body <text>] [--type <type>] [--priority <level>] [--thread-id <id>] [--payload <json>] [--task-id <id>] [--dispatch-id <id>] [--outcome <succeeded|failed>] [--files-modified <csv>] [--report-path <path>] [--phase <text>] [--json]',
+      'orca orchestration send --subject <text> [--to <run:id|dispatch:id|legacy_handle>] [--run <run_id>] [--from <handle>] [--body <text>] [--type <type>] [--priority <level>] [--thread-id <id>] [--payload <json>] [--task-id <id>] [--dispatch-id <id>] [--outcome <succeeded|failed>] [--files-modified <csv>] [--report-path <path>] [--phase <text>] [--retry-request <id>] [--json]',
     allowedFlags: [
       ...GLOBAL_FLAGS,
       'to',
@@ -80,7 +108,7 @@ export const ORCHESTRATION_COMMAND_SPECS: CommandSpec[] = [
     path: ['orchestration', 'check'],
     summary: 'Check messages for a terminal',
     usage:
-      'orca orchestration check [--terminal <handle>] [--run <run_id>] [--ack <delivery_id>] [--unread | --peek | --all] [--types <type,...>] [--format] [--wait] [--timeout-ms <n>] [--json]\n' +
+      'orca orchestration check [--terminal <handle>] [--run <run_id>] [--ack <delivery_id>] [--unread | --peek | --all] [--types <type,...>] [--format] [--wait] [--timeout-ms <n>] [--retry-request <id>] [--json]\n' +
       "  default: return the bound Run's oldest unacknowledged FIFO batch.\n" +
       '  --ack: acknowledge the prior whole batch before checking/waiting.\n' +
       '  --peek: return only unread messages without marking them read.\n' +
@@ -114,7 +142,7 @@ export const ORCHESTRATION_COMMAND_SPECS: CommandSpec[] = [
     path: ['orchestration', 'reply'],
     summary: 'Reply to a message',
     usage:
-      'orca orchestration reply --id <msg_id> --body <text> [--run <run_id>] [--from <handle>] [--json]',
+      'orca orchestration reply --id <msg_id> --body <text> [--run <run_id>] [--from <handle>] [--retry-request <id>] [--json]',
     allowedFlags: [...GLOBAL_FLAGS, 'id', 'body', 'run', 'from', 'retry-request']
   },
   {
@@ -127,7 +155,7 @@ export const ORCHESTRATION_COMMAND_SPECS: CommandSpec[] = [
     path: ['orchestration', 'task-create'],
     summary: 'Create an orchestration task',
     usage:
-      'orca orchestration task-create --spec <text> [--task-title <text>] [--display-name <text>] [--deps <json_array>] [--parent <task_id>] [--run <run_id>] [--from <handle>] [--json]',
+      'orca orchestration task-create --spec <text> [--task-title <text>] [--display-name <text>] [--deps <json_array>] [--parent <task_id>] [--run <run_id>] [--from <handle>] [--retry-request <id>] [--json]',
     allowedFlags: [
       ...GLOBAL_FLAGS,
       'spec',
@@ -152,7 +180,7 @@ export const ORCHESTRATION_COMMAND_SPECS: CommandSpec[] = [
     path: ['orchestration', 'task-update'],
     summary: 'Update a task status',
     usage:
-      'orca orchestration task-update --id <task_id> --status <status> [--result <json>] [--run <run_id>] [--from <handle>] [--json]',
+      'orca orchestration task-update --id <task_id> --status <status> [--result <json>] [--run <run_id>] [--from <handle>] [--retry-request <id>] [--json]',
     allowedFlags: [...GLOBAL_FLAGS, 'id', 'status', 'result', 'run', 'from', 'retry-request'],
     notes: ['Valid --status values: pending, ready, dispatched, completed, failed, blocked.']
   },
@@ -161,7 +189,7 @@ export const ORCHESTRATION_COMMAND_SPECS: CommandSpec[] = [
     path: ['orchestration', 'dispatch'],
     summary: 'Dispatch a task to a terminal',
     usage:
-      'orca orchestration dispatch --task <task_id> --to <handle> [--from <handle>] [--run <run_id>] [--inject] [--dry-run] [--return-preamble] [--json]',
+      'orca orchestration dispatch --task <task_id> --to <handle> [--from <handle>] [--run <run_id>] [--inject] [--dry-run] [--return-preamble] [--retry-request <id>] [--json]',
     allowedFlags: [
       ...GLOBAL_FLAGS,
       'task',
@@ -185,7 +213,7 @@ export const ORCHESTRATION_COMMAND_SPECS: CommandSpec[] = [
     path: ['orchestration', 'ask'],
     summary: 'Ask the coordinator a question and block until answered',
     usage:
-      'orca orchestration ask (--question <text> | --resume <message_id>) [--to <run:id>] [--run <run_id>] [--options <csv>] [--timeout-ms <n>] [--from <handle>] [--json]',
+      'orca orchestration ask (--question <text> | --resume <message_id>) [--to <run:id>] [--run <run_id>] [--options <csv>] [--timeout-ms <n>] [--from <handle>] [--retry-request <id>] [--json]',
     allowedFlags: [
       ...GLOBAL_FLAGS,
       'to',
@@ -236,14 +264,14 @@ export const ORCHESTRATION_COMMAND_SPECS: CommandSpec[] = [
     path: ['orchestration', 'gate-create'],
     summary: 'Create a decision gate blocking a task',
     usage:
-      'orca orchestration gate-create --task <task_id> --question <text> [--options <json_array>] [--from <handle>] [--json]',
+      'orca orchestration gate-create --task <task_id> --question <text> [--options <json_array>] [--from <handle>] [--retry-request <id>] [--json]',
     allowedFlags: [...GLOBAL_FLAGS, 'task', 'question', 'options', 'from', 'retry-request']
   },
   {
     path: ['orchestration', 'gate-resolve'],
     summary: 'Resolve a pending decision gate',
     usage:
-      'orca orchestration gate-resolve --id <gate_id> --resolution <text> [--from <handle>] [--json]',
+      'orca orchestration gate-resolve --id <gate_id> --resolution <text> [--from <handle>] [--retry-request <id>] [--json]',
     allowedFlags: [...GLOBAL_FLAGS, 'id', 'resolution', 'from', 'retry-request']
   },
   {
@@ -257,7 +285,8 @@ export const ORCHESTRATION_COMMAND_SPECS: CommandSpec[] = [
   {
     path: ['orchestration', 'reset'],
     summary: 'Reset one explicit orchestration state scope',
-    usage: 'orca orchestration reset (--all | --tasks | --messages) [--json]',
+    usage:
+      'orca orchestration reset (--all | --tasks | --messages) [--retry-request <id>] [--json]',
     allowedFlags: [...GLOBAL_FLAGS, 'all', 'tasks', 'messages', 'retry-request']
   }
 ]

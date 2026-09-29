@@ -8,6 +8,8 @@ import type {
 } from '../../orca-runtime'
 import { OrchestrationError } from '../../orchestration/orchestration-error'
 import { assertCallerHandleMatchesEvidence } from './orchestration-run-scope'
+import { configureKernelRun } from '../../orchestration/kernel-run-config'
+import { requireKernelCoordinator, prepareKernelRunBinding } from './orchestration-kernel-admission'
 
 const RunCreateParams = z.object({
   objective: requiredString('Missing --objective'),
@@ -17,7 +19,8 @@ const RunCreateParams = z.object({
 const RunUseParams = z.object({
   id: requiredString('Missing --id'),
   from: requiredString('Missing coordinator terminal'),
-  takeoverLegacy: OptionalBoolean
+  takeoverLegacy: OptionalBoolean,
+  kernel: z.unknown().optional()
 })
 
 const RunCurrentParams = z.object({ from: requiredString('Missing coordinator terminal') })
@@ -59,6 +62,7 @@ export const ORCHESTRATION_RUN_METHODS: RpcMethod[] = [
         coordinatorHandle: params.from,
         coordinatorPaneKey: paneKey
       })
+      runtime.cancelMessageWaiters(params.from)
       if (priorRun) {
         runtime.cancelMessageWaiters(`run:${priorRun.id}`)
       }
@@ -77,7 +81,30 @@ export const ORCHESTRATION_RUN_METHODS: RpcMethod[] = [
         orchestrationCompatibilityCallerAuthority: callerAuthority
       }
     ) => {
-      const paneKey = requireCallerPane(runtime, params.from, callerAuthority)
+      const storedRun = runtime.getOrchestrationDb().getRun(params.id)
+      if (params.kernel !== undefined) {
+        const current = requireKernelCoordinator(
+          runtime,
+          params.id,
+          params.from,
+          orchestrationCompatibilityEvidence
+        )
+        if (params.kernel !== undefined) {
+          const run = configureKernelRun(runtime.getOrchestrationDb(), current, params.kernel)
+          return { run, binding: { consumerGeneration: run.consumer_generation } }
+        }
+      }
+      const kernelBinding =
+        storedRun?.kernel_config != null
+          ? prepareKernelRunBinding(
+              runtime,
+              params.id,
+              params.from,
+              orchestrationCompatibilityEvidence
+            )
+          : undefined
+      const paneKey =
+        kernelBinding?.paneKey ?? requireCallerPane(runtime, params.from, callerAuthority)
       if (
         params.takeoverLegacy &&
         (callerAuthority?.terminalHandle !== params.from || callerAuthority.paneKey !== paneKey)
@@ -96,6 +123,7 @@ export const ORCHESTRATION_RUN_METHODS: RpcMethod[] = [
         coordinatorHandle: params.from,
         coordinatorPaneKey: paneKey,
         takeoverLegacy: params.takeoverLegacy,
+        kernelBeforeBind: kernelBinding?.validate,
         legacyCoordinatorAuthority
       })
       if (!run) {
@@ -104,6 +132,7 @@ export const ORCHESTRATION_RUN_METHODS: RpcMethod[] = [
           `Run ${params.id} was not found or is inspect-only.`
         )
       }
+      runtime.cancelMessageWaiters(params.from)
       runtime.cancelMessageWaiters(`run:${params.id}`)
       if (priorRun && priorRun.id !== params.id) {
         runtime.cancelMessageWaiters(`run:${priorRun.id}`)
